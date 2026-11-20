@@ -1,0 +1,10 @@
+{
+  "name": "AI VISION - Computer Vision Suite",
+  "description": "Browser-based computer vision platform uniting 5 local AI modules: ARGUS Deep Detection, GestureOS, Motion Intelligence, FaceMesh Lab, and PlantDoc AI weed & botanical diagnostician.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
