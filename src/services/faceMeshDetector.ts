@@ -1,5 +1,11 @@
-import { FaceLandmark, FaceMeshResult } from '../types';
+import { FaceColorPalette, FaceLandmark, FaceMeshResult } from '../types';
 import { loadScript, runSequentialInit } from './modelLoader';
+import {
+  buildCanonical468Face,
+  FACE_OVAL_LOOP,
+  LIPS_OUTER_LOOP,
+  sampleFaceColorsFromSource,
+} from './faceMeshTopology';
 
 declare global {
   interface Window {
@@ -14,6 +20,31 @@ let mediaPipeDisabled = false;
 let isInferencing = false;
 let lastResults: any = null;
 let lastFaceResult: FaceMeshResult | null = null;
+let lastSampledPalette: FaceColorPalette | undefined;
+let syncedFaceFrameCanvas: HTMLCanvasElement | null = null;
+
+function captureSyncedFrame(video: HTMLVideoElement): HTMLCanvasElement | null {
+  if (typeof document === 'undefined' || video.videoWidth === 0 || video.videoHeight === 0) {
+    return null;
+  }
+  const targetW = Math.min(640, video.videoWidth);
+  const targetH = Math.max(1, Math.round(targetW * (video.videoHeight / video.videoWidth)));
+  if (!syncedFaceFrameCanvas) {
+    syncedFaceFrameCanvas = document.createElement('canvas');
+  }
+  if (syncedFaceFrameCanvas.width !== targetW || syncedFaceFrameCanvas.height !== targetH) {
+    syncedFaceFrameCanvas.width = targetW;
+    syncedFaceFrameCanvas.height = targetH;
+  }
+  const ctx = syncedFaceFrameCanvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.drawImage(video, 0, 0, targetW, targetH);
+  return syncedFaceFrameCanvas;
+}
+
+export function getSyncedFaceFrameCanvas(): HTMLCanvasElement | null {
+  return syncedFaceFrameCanvas;
+}
 
 export async function initFaceMeshModel(): Promise<boolean> {
   if (faceMeshInstance) return true;
@@ -63,8 +94,7 @@ export async function initFaceMeshModel(): Promise<boolean> {
 
       faceMeshInstance = instance;
       return true;
-    } catch (err) {
-      console.warn('MediaPipe FaceMesh unavailable, switching to local fallback:', err);
+    } catch {
       mediaPipeDisabled = true;
       faceMeshInstance = null;
       return false;
@@ -93,10 +123,14 @@ export async function detectFaceMesh(video: HTMLVideoElement): Promise<FaceMeshR
   if (video.videoWidth === 0 || video.videoHeight === 0) return null;
   if (isInferencing) return lastFaceResult;
 
+  const videoAspect = video.videoWidth / Math.max(1, video.videoHeight);
+  const syncedCanvas = captureSyncedFrame(video);
+  const inferenceSource: HTMLVideoElement | HTMLCanvasElement = syncedCanvas || video;
+
   if (faceMeshInstance && !mediaPipeDisabled) {
     isInferencing = true;
     try {
-      await faceMeshInstance.send({ image: video });
+      await faceMeshInstance.send({ image: inferenceSource });
       if (lastResults && lastResults.multiFaceLandmarks && lastResults.multiFaceLandmarks.length > 0) {
         const raw = lastResults.multiFaceLandmarks[0];
         const landmarks: FaceLandmark[] = raw.map((pt: any) => ({
@@ -125,12 +159,26 @@ export async function detectFaceMesh(video: HTMLVideoElement): Promise<FaceMeshR
               )
             : 0.28;
 
+        const earRight =
+          landmarks[385] && landmarks[387] && landmarks[373] && landmarks[380]
+            ? calculateEAR(
+                rightEyeInner,
+                landmarks[385],
+                landmarks[387],
+                rightEyeOuter,
+                landmarks[380],
+                landmarks[373]
+              )
+            : earLeft;
+
+        const avgEar = (earLeft + earRight) * 0.5;
+
         const mouthDist = Math.hypot(topLip.x - bottomLip.x, topLip.y - bottomLip.y);
         const eyeSpan = Math.hypot(
           leftEyeOuter.x - rightEyeOuter.x,
           leftEyeOuter.y - rightEyeOuter.y
         );
-        const mouthOpenness = eyeSpan > 0 ? Number((mouthDist / eyeSpan).toFixed(2)) : 0.15;
+        const mouthOpenness = eyeSpan > 0 ? Number(Math.min(0.8, mouthDist / eyeSpan).toFixed(2)) : 0.15;
 
         const midEyesX = (leftEyeInner.x + rightEyeInner.x) / 2;
         const yaw = Math.round((nose.x - midEyesX) * 200);
@@ -142,9 +190,17 @@ export async function detectFaceMesh(video: HTMLVideoElement): Promise<FaceMeshR
           (nose.y - (leftEyeInner.y + rightEyeInner.y) / 2) * 120 - 15
         );
 
+        lastSampledPalette = sampleFaceColorsFromSource(
+          inferenceSource,
+          landmarks,
+          lastSampledPalette
+        );
+
         const result: FaceMeshResult = {
           landmarks,
-          eyeAspectRatio: Number(earLeft.toFixed(3)),
+          eyeAspectRatio: Number(avgEar.toFixed(3)),
+          leftEyeAspectRatio: Number(earLeft.toFixed(3)),
+          rightEyeAspectRatio: Number(earRight.toFixed(3)),
           mouthOpenness,
           faceOrientation: { yaw, pitch, roll },
           keypoints: {
@@ -152,19 +208,21 @@ export async function detectFaceMesh(video: HTMLVideoElement): Promise<FaceMeshR
             leftEye: {
               x: (leftEyeOuter.x + leftEyeInner.x) / 2,
               y: (leftEyeOuter.y + leftEyeInner.y) / 2,
-              z: 0,
+              z: ((leftEyeOuter.z || 0) + (leftEyeInner.z || 0)) / 2,
             },
             rightEye: {
               x: (rightEyeOuter.x + rightEyeInner.x) / 2,
               y: (rightEyeOuter.y + rightEyeInner.y) / 2,
-              z: 0,
+              z: ((rightEyeOuter.z || 0) + (rightEyeInner.z || 0)) / 2,
             },
             mouthCenter: {
               x: (topLip.x + bottomLip.x) / 2,
               y: (topLip.y + bottomLip.y) / 2,
-              z: 0,
+              z: ((topLip.z || 0) + (bottomLip.z || 0)) / 2,
             },
           },
+          palette: lastSampledPalette,
+          videoAspect,
         };
         lastFaceResult = result;
         isInferencing = false;
@@ -172,72 +230,66 @@ export async function detectFaceMesh(video: HTMLVideoElement): Promise<FaceMeshR
       }
       isInferencing = false;
       return null;
-    } catch (err) {
-      console.warn('MediaPipe FaceMesh inference error, switching to local fallback:', err);
+    } catch {
       mediaPipeDisabled = true;
       faceMeshInstance = null;
       isInferencing = false;
     }
   }
 
-  const fallback = runFallbackFaceMesh();
+  const fallback = runFallbackFaceMesh(inferenceSource, videoAspect);
   lastFaceResult = fallback;
   return fallback;
 }
 
 let faceTick = 0;
-function runFallbackFaceMesh(): FaceMeshResult {
+function runFallbackFaceMesh(
+  source: HTMLVideoElement | HTMLCanvasElement,
+  videoAspect: number
+): FaceMeshResult {
   faceTick += 0.05;
-  const yaw = Math.round(Math.sin(faceTick * 0.4) * 18);
-  const pitch = Math.round(Math.cos(faceTick * 0.3) * 12);
-  const roll = Math.round(Math.sin(faceTick * 0.2) * 8);
+  const yaw = Math.round(Math.sin(faceTick * 0.4) * 16);
+  const pitch = Math.round(Math.cos(faceTick * 0.3) * 10);
+  const roll = Math.round(Math.sin(faceTick * 0.2) * 7);
 
-  const cx = 0.5 + Math.sin(faceTick * 0.4) * 0.04;
-  const cy = 0.45 + Math.cos(faceTick * 0.3) * 0.02;
+  const cx = 0.5 + Math.sin(faceTick * 0.4) * 0.03;
+  const cy = 0.46 + Math.cos(faceTick * 0.3) * 0.02;
 
-  const landmarks: FaceLandmark[] = [];
-  const rings = 12;
-  const pointsPerRing = 39;
+  const blinkWave = Math.sin(faceTick * 0.7) > 0.9 ? 0.14 : 0.29;
+  const mouthOpen = Number((0.1 + Math.abs(Math.sin(faceTick * 0.5)) * 0.18).toFixed(2));
+  const landmarks = buildCanonical468Face(cx, cy, blinkWave, blinkWave, mouthOpen);
 
-  for (let r = 1; r <= rings; r++) {
-    const radiusX = (r / rings) * 0.18;
-    const radiusY = (r / rings) * 0.25;
-    for (let p = 0; p < pointsPerRing; p++) {
-      const angle = (p / pointsPerRing) * Math.PI * 2;
-      landmarks.push({
-        x: cx + Math.cos(angle) * radiusX,
-        y: cy + Math.sin(angle) * radiusY,
-        z: Math.cos(angle) * 0.05,
-      });
-    }
-  }
-
-  landmarks[1] = { x: cx, y: cy + 0.02, z: 0.08 };
-
-  const ear = 0.25 + (Math.sin(faceTick * 0.7) > 0.9 ? -0.15 : 0.05);
-  const mouthOpen = 0.12 + Math.abs(Math.sin(faceTick * 0.5)) * 0.18;
+  lastSampledPalette = sampleFaceColorsFromSource(source, landmarks, lastSampledPalette);
 
   return {
     landmarks,
-    eyeAspectRatio: Number(ear.toFixed(3)),
-    mouthOpenness: Number(mouthOpen.toFixed(2)),
+    eyeAspectRatio: Number(blinkWave.toFixed(3)),
+    leftEyeAspectRatio: Number(blinkWave.toFixed(3)),
+    rightEyeAspectRatio: Number(blinkWave.toFixed(3)),
+    mouthOpenness: mouthOpen,
     faceOrientation: { yaw, pitch, roll },
     keypoints: {
-      noseTip: { x: cx, y: cy + 0.02, z: 0.08 },
-      leftEye: { x: cx - 0.07, y: cy - 0.04, z: 0 },
-      rightEye: { x: cx + 0.07, y: cy - 0.04, z: 0 },
-      mouthCenter: { x: cx, y: cy + 0.11, z: 0 },
+      noseTip: landmarks[1],
+      leftEye: {
+        x: (landmarks[33].x + landmarks[133].x) * 0.5,
+        y: (landmarks[33].y + landmarks[133].y) * 0.5,
+        z: landmarks[33].z,
+      },
+      rightEye: {
+        x: (landmarks[362].x + landmarks[263].x) * 0.5,
+        y: (landmarks[362].y + landmarks[263].y) * 0.5,
+        z: landmarks[362].z,
+      },
+      mouthCenter: {
+        x: (landmarks[13].x + landmarks[14].x) * 0.5,
+        y: (landmarks[13].y + landmarks[14].y) * 0.5,
+        z: landmarks[13].z,
+      },
     },
+    palette: lastSampledPalette,
+    videoAspect,
   };
 }
 
-export const FACE_OVAL_INDICES = [
-  10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378,
-  400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21,
-  54, 103, 67, 109, 10,
-];
-
-export const LIPS_INDICES = [
-  61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95,
-  61,
-];
+export const FACE_OVAL_INDICES = [...FACE_OVAL_LOOP, FACE_OVAL_LOOP[0]];
+export const LIPS_INDICES = [...LIPS_OUTER_LOOP, LIPS_OUTER_LOOP[0]];

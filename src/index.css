@@ -269,6 +269,30 @@
   color: #f8fafc !important;
 }
 
+.dark .bg-\[\#ffd000\]:not([class*="dark:bg-"]) h1,
+.dark .bg-\[\#ffd000\]:not([class*="dark:bg-"]) h2,
+.dark .bg-\[\#ffd000\]:not([class*="dark:bg-"]) h3,
+.dark .bg-\[\#ffd000\]:not([class*="dark:bg-"]) h4,
+.dark .bg-\[\#ffd000\]:not([class*="dark:bg-"]) h5,
+.dark .bg-\[\#ffd000\]:not([class*="dark:bg-"]) h6,
+.dark .bg-\[\#ffd000\]:not([class*="dark:bg-"]) :is(p, span, strong, code, div):not([class*="dark:text-"]):not([class*="text-[#ff"]):not([class*="text-[#05"]):not([class*="text-[#10"]):not([class*="bg-[#ff"]):not([class*="bg-[#05"]),
+.dark .bg-\[\#00f0ff\]:not([class*="dark:bg-"]) h1,
+.dark .bg-\[\#00f0ff\]:not([class*="dark:bg-"]) h2,
+.dark .bg-\[\#00f0ff\]:not([class*="dark:bg-"]) h3,
+.dark .bg-\[\#00f0ff\]:not([class*="dark:bg-"]) h4,
+.dark .bg-\[\#00f0ff\]:not([class*="dark:bg-"]) h5,
+.dark .bg-\[\#00f0ff\]:not([class*="dark:bg-"]) h6,
+.dark .bg-\[\#00f0ff\]:not([class*="dark:bg-"]) :is(p, span, strong, code, div):not([class*="dark:text-"]):not([class*="text-[#ff"]):not([class*="text-[#05"]):not([class*="text-[#10"]):not([class*="bg-[#ff"]):not([class*="bg-[#05"]),
+.dark .bg-\[\#38bdf8\]:not([class*="dark:bg-"]) h1,
+.dark .bg-\[\#38bdf8\]:not([class*="dark:bg-"]) h2,
+.dark .bg-\[\#38bdf8\]:not([class*="dark:bg-"]) h3,
+.dark .bg-\[\#38bdf8\]:not([class*="dark:bg-"]) h4,
+.dark .bg-\[\#38bdf8\]:not([class*="dark:bg-"]) h5,
+.dark .bg-\[\#38bdf8\]:not([class*="dark:bg-"]) h6,
+.dark .bg-\[\#38bdf8\]:not([class*="dark:bg-"]) :is(p, span, strong, code, div):not([class*="dark:text-"]):not([class*="text-[#ff"]):not([class*="text-[#05"]):not([class*="text-[#10"]):not([class*="bg-[#ff"]):not([class*="bg-[#05"]) {
+  color: #121829 !important;
+}
+
 .dark .text-\[\#121829\]:not([class*="bg-[#ffd000]"]):not([class*="bg-[#00f0ff]"]):not([class*="bg-[#38bdf8]"]):not(.comic-btn-yellow):not(.comic-btn-cyan) {
   color: #f8fafc !important;
 }

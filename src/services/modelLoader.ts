@@ -16,24 +16,45 @@ export function loadScript(src: string): Promise<boolean> {
     return cached;
   }
 
-  loadedScripts[src] = new Promise((resolve) => {
+  const promise = new Promise<boolean>((resolve) => {
     const existing = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
     if (existing) {
       if (existing.dataset.loaded === 'true') {
         resolve(true);
         return;
       }
-      const onExistingLoad = () => {
-        existing.dataset.loaded = 'true';
-        resolve(true);
-      };
-      const onExistingError = () => {
-        resolve(false);
-      };
-      existing.addEventListener('load', onExistingLoad, { once: true });
-      existing.addEventListener('error', onExistingError, { once: true });
-      setTimeout(() => resolve(true), 1500);
-      return;
+      if (existing.dataset.failed === 'true') {
+        existing.remove();
+      } else {
+        let settledExisting = false;
+        const existingTimeoutId = window.setTimeout(() => {
+          if (!settledExisting) {
+            settledExisting = true;
+            delete loadedScripts[src];
+            resolve(false);
+          }
+        }, 12000);
+        const onExistingLoad = () => {
+          existing.dataset.loaded = 'true';
+          if (!settledExisting) {
+            settledExisting = true;
+            window.clearTimeout(existingTimeoutId);
+            resolve(true);
+          }
+        };
+        const onExistingError = () => {
+          existing.dataset.failed = 'true';
+          if (!settledExisting) {
+            settledExisting = true;
+            window.clearTimeout(existingTimeoutId);
+            delete loadedScripts[src];
+            resolve(false);
+          }
+        };
+        existing.addEventListener('load', onExistingLoad, { once: true });
+        existing.addEventListener('error', onExistingError, { once: true });
+        return;
+      }
     }
 
     const script = document.createElement('script');
@@ -45,6 +66,7 @@ export function loadScript(src: string): Promise<boolean> {
     const timeoutId = window.setTimeout(() => {
       if (!settled) {
         settled = true;
+        delete loadedScripts[src];
         resolve(false);
       }
     }, 12000);
@@ -59,10 +81,12 @@ export function loadScript(src: string): Promise<boolean> {
     };
 
     script.onerror = (err) => {
+      script.dataset.failed = 'true';
       console.warn(`Failed to load external ML model script from CDN: ${src}`, err);
       if (!settled) {
         settled = true;
         window.clearTimeout(timeoutId);
+        delete loadedScripts[src];
         resolve(false);
       }
     };
@@ -70,7 +94,8 @@ export function loadScript(src: string): Promise<boolean> {
     document.head.appendChild(script);
   });
 
-  return loadedScripts[src];
+  loadedScripts[src] = promise;
+  return promise;
 }
 
 export interface ModelLoadingState {

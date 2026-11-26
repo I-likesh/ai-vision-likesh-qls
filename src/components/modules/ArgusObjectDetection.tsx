@@ -1,7 +1,13 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { CameraViewport } from '../common/CameraViewport';
 import { useCamera } from '../../context/CameraContext';
-import { DetectedObject, VisionEvent, ArgusCustomClass } from '../../types';
+import {
+  DetectedObject,
+  VisionEvent,
+  ArgusCustomClass,
+  ArgusTrainingProgress,
+  ArgusUnifiedDatasetModel,
+} from '../../types';
 import {
   initArgusModel,
   detectObjects,
@@ -10,7 +16,13 @@ import {
   trainClassSample,
   getCustomClasses,
   removeCustomClass,
+  amplifyUnifiedDataset,
+  trainUnifiedArgusDataset,
+  getTrainedUnifiedModel,
+  resetUnifiedArgusModel,
+  getUnifiedDatasetSampleCount,
 } from '../../services/argusDetector';
+import { soundFx } from '../../services/soundFx';
 import {
   Sliders,
   Volume2,
@@ -24,6 +36,10 @@ import {
   Award,
   Layers,
   CheckCircle,
+  Brain,
+  Zap,
+  RotateCcw,
+  Radio,
 } from 'lucide-react';
 
 interface ArgusProps {
@@ -31,7 +47,7 @@ interface ArgusProps {
 }
 
 export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
-  const { videoRef, isStreaming, captureSnapshot } = useCamera();
+  const { videoRef, isStreaming, isMirrored, captureSnapshot } = useCamera();
   const [modelReady, setModelReady] = useState(false);
   const [backbone, setBackbone] = useState<'mobilenet_v2' | 'lite_mobilenet_v2'>('mobilenet_v2');
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.45);
@@ -46,8 +62,32 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
   const [newClassColor, setNewClassColor] = useState('#a855f7');
   const [selectedClassId, setSelectedClassId] = useState<string>('');
   const [trainingNotice, setTrainingNotice] = useState<string>('');
+  const [autoCollecting, setAutoCollecting] = useState(false);
+  const [isDeepTraining, setIsDeepTraining] = useState(false);
+  const [trainingProgress, setTrainingProgress] = useState<ArgusTrainingProgress | null>(null);
+  const [unifiedModel, setUnifiedModel] = useState<ArgusUnifiedDatasetModel | null>(() =>
+    getTrainedUnifiedModel()
+  );
+  const [datasetSampleCount, setDatasetSampleCount] = useState<number>(() =>
+    getUnifiedDatasetSampleCount()
+  );
 
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  const trainingTimerRef = useRef<number | null>(null);
+  const snapshotTimerRef = useRef<number | null>(null);
+  const autoCollectTimerRef = useRef<number | null>(null);
+  const detectedObjectsRef = useRef<DetectedObject[]>([]);
+
+  useEffect(() => {
+    detectedObjectsRef.current = detectedObjects;
+  }, [detectedObjects]);
+
+  useEffect(() => {
+    return () => {
+      if (trainingTimerRef.current !== null) window.clearTimeout(trainingTimerRef.current);
+      if (snapshotTimerRef.current !== null) window.clearTimeout(snapshotTimerRef.current);
+      if (autoCollectTimerRef.current !== null) window.clearInterval(autoCollectTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -74,24 +114,7 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
 
   const playBeep = useCallback(() => {
     if (!soundEnabled) return;
-    try {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      const ctx = audioCtxRef.current;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
-      gain.gain.setValueAtTime(0.05, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.12);
-    } catch (e) {
-
-    }
+    soundFx.playTargetLock();
   }, [soundEnabled]);
 
   useEffect(() => {
@@ -155,46 +178,161 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
     });
   };
 
-  const handleTrainLiveSample = () => {
-    const video = videoRef.current;
-    if (!video || !isStreaming || video.videoWidth === 0) {
-      setTrainingNotice('Please start webcam before training.');
-      setTimeout(() => setTrainingNotice(''), 3000);
-      return;
-    }
-    if (!selectedClassId) {
-      setTrainingNotice('Select a class to train.');
-      setTimeout(() => setTrainingNotice(''), 3000);
+  const showTrainingNotice = useCallback((msg: string, ms = 3500) => {
+    setTrainingNotice(msg);
+    if (trainingTimerRef.current !== null) window.clearTimeout(trainingTimerRef.current);
+    trainingTimerRef.current = window.setTimeout(() => setTrainingNotice(''), ms);
+  }, []);
+
+  const captureBurstForSelected = useCallback(
+    (augmentCount: number, silentLog = false) => {
+      const video = videoRef.current;
+      if (!video || !isStreaming || video.videoWidth === 0) {
+        showTrainingNotice('Please start webcam before collecting dataset samples.', 3000);
+        return false;
+      }
+      if (!selectedClassId) {
+        showTrainingNotice('Select a target class to add samples into the unified dataset.', 3000);
+        return false;
+      }
+
+      let trainBbox = {
+        x: video.videoWidth * 0.25,
+        y: video.videoHeight * 0.2,
+        width: video.videoWidth * 0.5,
+        height: video.videoHeight * 0.6,
+      };
+      const liveDet = detectedObjectsRef.current;
+      if (liveDet.length > 0) {
+        trainBbox = liveDet[0].bbox;
+      }
+
+      const totalSamples = trainClassSample(selectedClassId, video, trainBbox, augmentCount);
+      const updatedClasses = getCustomClasses();
+      setCustomClassesList(updatedClasses);
+      setDatasetSampleCount(getUnifiedDatasetSampleCount());
+      const targetClass = updatedClasses.find((c) => c.id === selectedClassId);
+      showTrainingNotice(
+        `+${augmentCount} multi-transform vectors added to "${targetClass?.name}" (Class Total: ${totalSamples})`,
+        3500
+      );
+
+      if (!silentLog) {
+        onLogEvent({
+          module: 'argus',
+          title: 'Unified Dataset Expanded',
+          description: `Captured +${augmentCount} augmented 96D samples & background negatives for ${targetClass?.name}.`,
+          type: 'success',
+        });
+      }
+      return true;
+    },
+    [videoRef, isStreaming, selectedClassId, showTrainingNotice, onLogEvent]
+  );
+
+  useEffect(() => {
+    if (!autoCollecting) {
+      if (autoCollectTimerRef.current !== null) {
+        window.clearInterval(autoCollectTimerRef.current);
+        autoCollectTimerRef.current = null;
+      }
       return;
     }
 
-    let trainBbox = {
-      x: video.videoWidth * 0.25,
-      y: video.videoHeight * 0.2,
-      width: video.videoWidth * 0.5,
-      height: video.videoHeight * 0.6,
+    if (!isStreaming || !selectedClassId) {
+      setAutoCollecting(false);
+      return;
+    }
+
+    let ticks = 0;
+    autoCollectTimerRef.current = window.setInterval(() => {
+      ticks++;
+      const ok = captureBurstForSelected(45, true);
+      if (!ok || ticks >= 10) {
+        setAutoCollecting(false);
+        if (ticks >= 10) {
+          showTrainingNotice('Continuous burst finished (+450 multi-angle samples collected in dataset).', 4000);
+        }
+      }
+    }, 240);
+
+    return () => {
+      if (autoCollectTimerRef.current !== null) {
+        window.clearInterval(autoCollectTimerRef.current);
+        autoCollectTimerRef.current = null;
+      }
     };
-    if (detectedObjects.length > 0) {
-      trainBbox = detectedObjects[0].bbox;
-    }
+  }, [autoCollecting, isStreaming, selectedClassId, captureBurstForSelected, showTrainingNotice]);
 
-    const totalSamples = trainClassSample(selectedClassId, video, trainBbox, 25);
+  const handleTrainLiveSample = () => {
+    captureBurstForSelected(80, false);
+  };
+
+  const handleAmplifyDataset = () => {
+    const added = amplifyUnifiedDataset(4);
     setCustomClassesList(getCustomClasses());
-    const targetClass = customClassesList.find((c) => c.id === selectedClassId);
-    setTrainingNotice(`+25 augmented samples trained for "${targetClass?.name}" (Total: ${totalSamples})`);
-    setTimeout(() => setTrainingNotice(''), 3500);
+    setDatasetSampleCount(getUnifiedDatasetSampleCount());
+    if (added > 0) {
+      showTrainingNotice(`Amplified single dataset by +${added} mixup & lighting perturbations.`, 4000);
+      onLogEvent({
+        module: 'argus',
+        title: 'Dataset Augmentation Boost',
+        description: `Generated +${added} augmented vectors across all classes in the single dataset.`,
+        type: 'info',
+      });
+    } else {
+      showTrainingNotice('Capture at least one frame first before amplifying the dataset.', 3000);
+    }
+  };
 
-    onLogEvent({
-      module: 'argus',
-      title: 'On-Device Transfer Learning',
-      description: `Trained 25 augmented features on local camera frame for ${targetClass?.name}.`,
-      type: 'success',
+  const handleRunUnifiedTraining = async () => {
+    if (isDeepTraining) return;
+    setAutoCollecting(false);
+    setIsDeepTraining(true);
+    setTrainingProgress({
+      epoch: 0,
+      totalEpochs: 3000,
+      loss: 1,
+      accuracy: 0,
+      datasetSize: getUnifiedDatasetSampleCount(),
+      phase: 'Consolidating Unified Single Dataset...',
     });
+
+    try {
+      const trained = await trainUnifiedArgusDataset((prog) => {
+        setTrainingProgress(prog);
+      }, 3000);
+      setUnifiedModel(trained);
+      setDatasetSampleCount(getUnifiedDatasetSampleCount());
+      showTrainingNotice(
+        `Unified dataset trained (${trained.epochsCompleted.toLocaleString()} epochs, ${trained.totalAugmentedSamples.toLocaleString()} dataset samples, ${trained.validationAccuracy}% val accuracy).`,
+        5000
+      );
+      onLogEvent({
+        module: 'argus',
+        title: 'ARGUS Single-Dataset Training Complete',
+        description: `Trained 96->32->K neural head across ${trained.epochsCompleted.toLocaleString()} epochs (${trained.validationAccuracy}% validation accuracy).`,
+        type: 'success',
+      });
+    } catch (err) {
+      showTrainingNotice(err instanceof Error ? err.message : 'Unable to train unified dataset.', 4000);
+    } finally {
+      setIsDeepTraining(false);
+    }
+  };
+
+  const handleResetUnifiedModel = () => {
+    resetUnifiedArgusModel();
+    setUnifiedModel(null);
+    setTrainingProgress(null);
+    showTrainingNotice('Reset trained unified classifier weights.', 3000);
   };
 
   const handleRemoveClass = (id: string, name: string) => {
     removeCustomClass(id);
     setCustomClassesList(getCustomClasses());
+    setDatasetSampleCount(getUnifiedDatasetSampleCount());
+    setUnifiedModel(getTrainedUnifiedModel());
     if (selectedClassId === id) setSelectedClassId('');
     onLogEvent({
       module: 'argus',
@@ -212,10 +350,10 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
     const scaleY = height / video.videoHeight;
 
     detectedObjects.forEach((obj) => {
-      const x = obj.bbox.x * scaleX;
-      const y = obj.bbox.y * scaleY;
       const w = obj.bbox.width * scaleX;
       const h = obj.bbox.height * scaleY;
+      const x = isMirrored ? width - (obj.bbox.x * scaleX + w) : obj.bbox.x * scaleX;
+      const y = obj.bbox.y * scaleY;
 
       ctx.strokeStyle = '#121829';
       ctx.lineWidth = 4;
@@ -229,25 +367,35 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
       const labelText = `${obj.label.toUpperCase()} · ${obj.confidence}%`;
       ctx.font = 'bold 14px Nunito, sans-serif';
       const textWidth = ctx.measureText(labelText).width;
+      const labelX = Math.max(0, Math.min(width - (textWidth + 18), x));
+      const labelY = Math.max(0, y - 28);
 
       ctx.fillStyle = '#121829';
-      ctx.fillRect(x + 2, Math.max(0, y - 28) + 2, textWidth + 18, 26);
+      ctx.fillRect(labelX + 2, labelY + 2, textWidth + 18, 26);
 
       ctx.fillStyle = isCustom ? '#a855f7' : obj.category === 'person' ? '#00f0ff' : '#ffd000';
-      ctx.fillRect(x, Math.max(0, y - 28), textWidth + 18, 26);
+      ctx.fillRect(labelX, labelY, textWidth + 18, 26);
       ctx.lineWidth = 2;
-      ctx.strokeRect(x, Math.max(0, y - 28), textWidth + 18, 26);
+      ctx.strokeRect(labelX, labelY, textWidth + 18, 26);
 
       ctx.fillStyle = isCustom ? '#ffffff' : '#121829';
-      ctx.fillText(labelText, x + 9, Math.max(18, y - 10));
+      ctx.fillText(labelText, labelX + 9, labelY + 18);
     });
   };
 
   const handleTakeSnapshot = () => {
     const dataUrl = captureSnapshot();
     if (dataUrl) {
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `argus-frame-${Date.now()}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
       setSnapshotSuccess(true);
-      setTimeout(() => setSnapshotSuccess(false), 2000);
+      if (snapshotTimerRef.current !== null) window.clearTimeout(snapshotTimerRef.current);
+      snapshotTimerRef.current = window.setTimeout(() => setSnapshotSuccess(false), 2000);
       onLogEvent({
         module: 'argus',
         title: 'Snapshot Captured',
@@ -363,7 +511,9 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
           <div className="p-3 rounded-xl border-2 border-[#121829] dark:border-[#27354f] bg-[#faf6ee] dark:bg-[#182238] shadow-[1.5px_1.5px_0px_#121829]">
             <span className="text-xs font-black text-[#121829]/60 dark:text-[#94a3b8] uppercase block">Active Recognition Index</span>
             <span className="font-mono text-sm text-[#ff2a85] font-black block mt-0.5">{metadata.totalClasses} Total Classes</span>
-            <span className="text-xs font-bold text-[#121829]/75 dark:text-[#cbd5e1]">80 Core + {customClassesList.length} User-Trained Custom</span>
+            <span className="text-xs font-bold text-[#121829]/75 dark:text-[#cbd5e1]">
+              80 Core + {customClassesList.length} Custom ({datasetSampleCount.toLocaleString()} unified vectors)
+            </span>
           </div>
         </div>
       </div>
@@ -406,7 +556,7 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
           </div>
 
           <div className="comic-panel p-5 bg-white space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b-2 border-[#121829]">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b-2 border-[#121829] dark:border-[#27354f]">
               <div className="flex items-center gap-2.5">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#a855f7] border-2 border-[#121829] text-white shadow-[1.5px_1.5px_0px_#121829]">
                   <Sparkles className="h-4 w-4" />
@@ -416,16 +566,23 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
                     className="text-lg text-[#121829]"
                     style={{ fontFamily: "'Bagel Fat One', cursive" }}
                   >
-                    ARGUS Studio · Live On-Device Transfer Learning
+                    ARGUS Studio · Unified Single-Dataset Deep Training
                   </h3>
                   <p className="text-xs font-bold text-[#121829]/75">
-                    Teach ARGUS new custom objects instantly in your browser using data augmentation.
+                    Pool all classes + hard-negative crops into one 96D dataset and train a 3,000-epoch classifier head.
                   </p>
                 </div>
               </div>
-              <span className="text-xs font-black px-2.5 py-1 rounded-full border-2 border-[#121829] bg-[#faf6ee] shadow-[1px_1px_0px_#121829]">
-                {customClassesList.length} Custom Classes
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-black px-2.5 py-1 rounded-full border-2 border-[#121829] bg-[#faf6ee] shadow-[1px_1px_0px_#121829]">
+                  {datasetSampleCount.toLocaleString()} Unified Vectors
+                </span>
+                {unifiedModel && (
+                  <span className="text-xs font-black px-2.5 py-1 rounded-full border-2 border-[#121829] bg-[#00f0ff] text-[#121829] shadow-[1px_1px_0px_#121829]">
+                    TRAINED · {unifiedModel.validationAccuracy}% ACC
+                  </span>
+                )}
+              </div>
             </div>
 
             <form onSubmit={handleAddClass} className="flex flex-wrap items-center gap-3">
@@ -467,34 +624,110 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
                       <option value="">-- Choose Class to Train --</option>
                       {customClassesList.map((c) => (
                         <option key={c.id} value={c.id} className="bg-white dark:bg-[#111827] text-[#121829] dark:text-[#f8fafc]">
-                          {c.name} ({c.samplesCount} samples)
+                          {c.name} ({c.features.length} vectors)
                         </option>
                       ))}
                     </select>
                   </div>
 
-                  <button
-                    onClick={handleTrainLiveSample}
-                    disabled={!selectedClassId}
-                    className="comic-btn comic-btn-yellow px-4 py-2 rounded-xl text-xs uppercase cursor-pointer disabled:opacity-50"
-                  >
-                    <Award className="h-4 w-4 text-[#121829]" />
-                    <span>Capture &amp; Train (+25 Augmented Samples)</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={handleTrainLiveSample}
+                      disabled={!selectedClassId || isDeepTraining}
+                      className="comic-btn comic-btn-yellow px-3.5 py-2 rounded-xl text-xs uppercase cursor-pointer disabled:opacity-50"
+                    >
+                      <Award className="h-4 w-4 text-[#121829]" />
+                      <span>Capture Burst (+80)</span>
+                    </button>
+
+                    <button
+                      onClick={() => setAutoCollecting((prev) => !prev)}
+                      disabled={!selectedClassId || !isStreaming || isDeepTraining}
+                      className={`comic-btn px-3.5 py-2 rounded-xl text-xs uppercase cursor-pointer disabled:opacity-50 ${
+                        autoCollecting ? 'comic-btn-pink' : 'comic-btn-white'
+                      }`}
+                    >
+                      <Radio className="h-4 w-4" />
+                      <span>{autoCollecting ? 'Stop Auto-Collect' : 'Auto-Collect (+450)'}</span>
+                    </button>
+
+                    <button
+                      onClick={handleAmplifyDataset}
+                      disabled={isDeepTraining || datasetSampleCount === 0}
+                      className="comic-btn comic-btn-white px-3.5 py-2 rounded-xl text-xs uppercase cursor-pointer disabled:opacity-50"
+                    >
+                      <Zap className="h-4 w-4 text-[#ff462b]" />
+                      <span>Augment x4</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl border-2 border-[#121829] dark:border-[#27354f] bg-white dark:bg-[#111827] space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs font-extrabold text-[#121829] dark:text-[#f8fafc]">
+                      <span className="font-black uppercase text-[#ff462b]">Single-Dataset Neural Trainer</span>
+                      <span className="block text-[11px] font-bold text-[#121829]/70 dark:text-[#94a3b8]">
+                        {unifiedModel
+                          ? `Last run: ${unifiedModel.epochsCompleted.toLocaleString()} epochs · ${unifiedModel.totalAugmentedSamples.toLocaleString()} balanced vectors · Loss ${unifiedModel.finalLoss}`
+                          : 'Trains 96D -> 32 -> K Softmax neural head over all classes in one unified dataset.'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {unifiedModel && (
+                        <button
+                          onClick={handleResetUnifiedModel}
+                          disabled={isDeepTraining}
+                          className="comic-btn comic-btn-white px-3 py-1.5 rounded-xl text-xs uppercase cursor-pointer disabled:opacity-50"
+                          title="Reset Trained Classifier"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          <span>Reset</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={handleRunUnifiedTraining}
+                        disabled={isDeepTraining || customClassesList.every((c) => c.features.length === 0)}
+                        className="comic-btn comic-btn-cyan px-4 py-2 rounded-xl text-xs uppercase cursor-pointer disabled:opacity-50"
+                      >
+                        <Brain className="h-4 w-4" />
+                        <span>{isDeepTraining ? 'Training 3,000 Epochs...' : 'Train Single Dataset (3,000 Epochs)'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {trainingProgress && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] font-black text-[#121829] dark:text-[#f8fafc]">
+                        <span>{trainingProgress.phase}</span>
+                        <span className="font-mono">
+                          Epoch {trainingProgress.epoch.toLocaleString()}/{trainingProgress.totalEpochs.toLocaleString()} · Acc {trainingProgress.accuracy}% · Loss {trainingProgress.loss.toFixed(4)}
+                        </span>
+                      </div>
+                      <div className="h-2.5 w-full rounded-full border-2 border-[#121829] bg-[#faf6ee] dark:bg-[#1a2337] overflow-hidden">
+                        <div
+                          className="h-full bg-[#00f0ff] transition-all duration-150"
+                          style={{
+                            width: `${Math.min(100, Math.round((trainingProgress.epoch / Math.max(1, trainingProgress.totalEpochs)) * 100))}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {trainingNotice && (
-                  <div className="flex items-center gap-2 text-xs font-black text-[#059669] bg-emerald-50 p-2.5 rounded-lg border border-[#059669]">
+                  <div className="flex items-center gap-2 text-xs font-black text-[#059669] dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 p-2.5 rounded-lg border border-[#059669]">
                     <CheckCircle className="h-4 w-4 shrink-0" />
                     <span>{trainingNotice}</span>
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-[#121829]/20">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-[#121829]/20 dark:border-[#27354f]">
                   {customClassesList.map((cls) => (
                     <div
                       key={cls.id}
-                      className="flex items-center justify-between p-2 rounded-lg border-2 border-[#121829] bg-white text-xs shadow-[1.5px_1.5px_0px_#121829]"
+                      className="flex items-center justify-between p-2 rounded-lg border-2 border-[#121829] dark:border-[#27354f] bg-white dark:bg-[#111827] text-xs shadow-[1.5px_1.5px_0px_#121829]"
                     >
                       <div className="flex items-center gap-2.5">
                         {cls.thumbnail ? (
@@ -511,20 +744,20 @@ export const ArgusObjectDetection: React.FC<ArgusProps> = ({ onLogEvent }) => {
                         )}
                         <div>
                           <div className="flex items-center gap-1.5">
-                            <span className="font-black text-[#121829]">{cls.name}</span>
+                            <span className="font-black text-[#121829] dark:text-[#f8fafc]">{cls.name}</span>
                             <span
                               className="h-2 w-2 rounded-full border border-[#121829]"
                               style={{ backgroundColor: cls.color }}
                             />
                           </div>
-                          <span className="text-[10px] font-mono font-bold text-[#121829]/70 block">
-                            {cls.samplesCount} trained vectors · Saved to Device
+                          <span className="text-[10px] font-mono font-bold text-[#121829]/70 dark:text-[#94a3b8] block">
+                            {cls.features.length} pooled vectors ({cls.samplesCount} captured)
                           </span>
                         </div>
                       </div>
                       <button
                         onClick={() => handleRemoveClass(cls.id, cls.name)}
-                        className="text-[#ff462b] hover:text-[#121829] p-1 cursor-pointer"
+                        className="text-[#ff462b] hover:text-[#121829] dark:hover:text-white p-1 cursor-pointer"
                         title="Delete Class"
                       >
                         <Trash2 className="h-3.5 w-3.5" />

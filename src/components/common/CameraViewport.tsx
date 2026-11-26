@@ -52,35 +52,44 @@ export const CameraViewport: React.FC<CameraViewportProps> = ({
   };
 
   useEffect(() => {
-    let animId: number;
+    const canvas = canvasRef.current;
+    if (!isStreaming) {
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx?.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      return;
+    }
+
+    let animId = 0;
 
     const render = () => {
       const video = videoRef.current;
-      const canvas = canvasRef.current;
+      const currentCanvas = canvasRef.current;
 
-      if (canvas && video && isStreaming && video.readyState >= 2) {
-        const ctx = canvas.getContext('2d');
+      if (currentCanvas && video && video.readyState >= 2) {
+        const ctx = currentCanvas.getContext('2d');
         if (ctx) {
-          if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-            canvas.width = video.videoWidth || 1280;
-            canvas.height = video.videoHeight || 720;
+          if (currentCanvas.width !== video.videoWidth || currentCanvas.height !== video.videoHeight) {
+            currentCanvas.width = video.videoWidth || 1280;
+            currentCanvas.height = video.videoHeight || 720;
           }
 
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.clearRect(0, 0, currentCanvas.width, currentCanvas.height);
 
           ctx.save();
           if (isMirrored) {
-            ctx.translate(canvas.width, 0);
+            ctx.translate(currentCanvas.width, 0);
             ctx.scale(-1, 1);
           }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.drawImage(video, 0, 0, currentCanvas.width, currentCanvas.height);
           ctx.restore();
 
           if (crosshair) {
             ctx.strokeStyle = '#00f0ff';
             ctx.lineWidth = 2;
-            const cx = canvas.width / 2;
-            const cy = canvas.height / 2;
+            const cx = currentCanvas.width / 2;
+            const cy = currentCanvas.height / 2;
             ctx.beginPath();
             ctx.moveTo(cx - 24, cy);
             ctx.lineTo(cx + 24, cy);
@@ -90,7 +99,7 @@ export const CameraViewport: React.FC<CameraViewportProps> = ({
           }
 
           if (onDrawOverlay) {
-            onDrawOverlay(ctx, canvas.width, canvas.height);
+            onDrawOverlay(ctx, currentCanvas.width, currentCanvas.height);
           }
         }
       }

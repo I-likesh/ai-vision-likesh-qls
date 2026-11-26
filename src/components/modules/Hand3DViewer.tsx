@@ -2,13 +2,16 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { HandDetectionResult } from '../../types';
+import { HandDetectionResult, HandTwinTrainingProfile } from '../../types';
+import { softClamp, softClampScreenCoord } from '../../services/handTwinTrainer';
+import { enforceUnclumpableHandSkeleton } from '../../services/handSkeletonSolver';
 import { Activity, Box, RotateCcw, Sparkles } from 'lucide-react';
 
 interface Hand3DViewerProps {
   handResults: HandDetectionResult[];
   isMirrored: boolean;
   isStreaming: boolean;
+  trainedProfile?: HandTwinTrainingProfile | null;
 }
 
 type HandSkinMode = 'wireframe' | 'solid' | 'realistic';
@@ -16,30 +19,30 @@ type BionicFinish = 'cyber' | 'gold' | 'crimson';
 type SkinTonePreset = 'fair' | 'warm' | 'deep';
 
 const BONE_PAIRS: Array<{ a: number; b: number; radius: number; kind: 'phalanx' | 'metacarpal' | 'bridge' }> = [
-  { a: 1, b: 2, radius: 0.072, kind: 'phalanx' },
-  { a: 2, b: 3, radius: 0.062, kind: 'phalanx' },
-  { a: 3, b: 4, radius: 0.052, kind: 'phalanx' },
-  { a: 5, b: 6, radius: 0.066, kind: 'phalanx' },
-  { a: 6, b: 7, radius: 0.056, kind: 'phalanx' },
-  { a: 7, b: 8, radius: 0.048, kind: 'phalanx' },
-  { a: 9, b: 10, radius: 0.07, kind: 'phalanx' },
-  { a: 10, b: 11, radius: 0.06, kind: 'phalanx' },
-  { a: 11, b: 12, radius: 0.05, kind: 'phalanx' },
-  { a: 13, b: 14, radius: 0.064, kind: 'phalanx' },
-  { a: 14, b: 15, radius: 0.054, kind: 'phalanx' },
-  { a: 15, b: 16, radius: 0.046, kind: 'phalanx' },
-  { a: 17, b: 18, radius: 0.056, kind: 'phalanx' },
-  { a: 18, b: 19, radius: 0.048, kind: 'phalanx' },
-  { a: 19, b: 20, radius: 0.04, kind: 'phalanx' },
-  { a: 0, b: 1, radius: 0.078, kind: 'metacarpal' },
-  { a: 0, b: 5, radius: 0.066, kind: 'metacarpal' },
-  { a: 0, b: 9, radius: 0.068, kind: 'metacarpal' },
-  { a: 0, b: 13, radius: 0.064, kind: 'metacarpal' },
-  { a: 0, b: 17, radius: 0.06, kind: 'metacarpal' },
-  { a: 5, b: 9, radius: 0.052, kind: 'bridge' },
-  { a: 9, b: 13, radius: 0.052, kind: 'bridge' },
-  { a: 13, b: 17, radius: 0.05, kind: 'bridge' },
-  { a: 1, b: 5, radius: 0.052, kind: 'bridge' },
+  { a: 1, b: 2, radius: 0.058, kind: 'phalanx' },
+  { a: 2, b: 3, radius: 0.05, kind: 'phalanx' },
+  { a: 3, b: 4, radius: 0.042, kind: 'phalanx' },
+  { a: 5, b: 6, radius: 0.054, kind: 'phalanx' },
+  { a: 6, b: 7, radius: 0.046, kind: 'phalanx' },
+  { a: 7, b: 8, radius: 0.039, kind: 'phalanx' },
+  { a: 9, b: 10, radius: 0.057, kind: 'phalanx' },
+  { a: 10, b: 11, radius: 0.049, kind: 'phalanx' },
+  { a: 11, b: 12, radius: 0.041, kind: 'phalanx' },
+  { a: 13, b: 14, radius: 0.053, kind: 'phalanx' },
+  { a: 14, b: 15, radius: 0.045, kind: 'phalanx' },
+  { a: 15, b: 16, radius: 0.038, kind: 'phalanx' },
+  { a: 17, b: 18, radius: 0.047, kind: 'phalanx' },
+  { a: 18, b: 19, radius: 0.04, kind: 'phalanx' },
+  { a: 19, b: 20, radius: 0.034, kind: 'phalanx' },
+  { a: 0, b: 1, radius: 0.066, kind: 'metacarpal' },
+  { a: 0, b: 5, radius: 0.056, kind: 'metacarpal' },
+  { a: 0, b: 9, radius: 0.058, kind: 'metacarpal' },
+  { a: 0, b: 13, radius: 0.055, kind: 'metacarpal' },
+  { a: 0, b: 17, radius: 0.052, kind: 'metacarpal' },
+  { a: 5, b: 9, radius: 0.044, kind: 'bridge' },
+  { a: 9, b: 13, radius: 0.044, kind: 'bridge' },
+  { a: 13, b: 17, radius: 0.042, kind: 'bridge' },
+  { a: 1, b: 5, radius: 0.044, kind: 'bridge' },
 ];
 
 const REST_LANDMARKS: Array<[number, number, number]> = [
@@ -124,6 +127,7 @@ const _palmCenterB = new THREE.Vector3();
 const _knuckleArch = new THREE.Vector3();
 const _wristBase = new THREE.Vector3();
 
+
 function detectSoftwareGl(): boolean {
   try {
     const gl = document.createElement('canvas').getContext('webgl2');
@@ -142,11 +146,13 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
   handResults,
   isMirrored,
   isStreaming,
+  trainedProfile = null,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const handResultsRef = useRef<HandDetectionResult[]>(handResults);
   const isMirroredRef = useRef<boolean>(isMirrored);
   const isStreamingRef = useRef<boolean>(isStreaming);
+  const trainedProfileRef = useRef<HandTwinTrainingProfile | null>(trainedProfile);
 
   const [finishTheme, setFinishTheme] = useState<BionicFinish>('cyber');
   const finishThemeRef = useRef<BionicFinish>('cyber');
@@ -157,6 +163,10 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
   const [smoothingEnabled, setSmoothingEnabled] = useState(true);
   const smoothingRef = useRef(true);
   const resetCamFnRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    trainedProfileRef.current = trainedProfile;
+  }, [trainedProfile]);
 
   useEffect(() => {
     handResultsRef.current = handResults;
@@ -485,7 +495,7 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
       const jGroup = new THREE.Group();
       const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
       const isWrist = i === 0;
-      const r = isWrist ? 0.11 : isTip ? 0.048 : i % 4 === 1 ? 0.072 : 0.058;
+      const r = isWrist ? 0.095 : isTip ? 0.041 : i % 4 === 1 ? 0.058 : 0.048;
 
       const sphere = new THREE.Mesh(jointGeo, jointMat);
       sphere.scale.setScalar(r);
@@ -559,7 +569,7 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
     handRoot.add(palmMainMesh);
 
     const palmGroup = new THREE.Group();
-    const dorsalPlateGeo = new THREE.BoxGeometry(0.46, 0.36, 0.16);
+    const dorsalPlateGeo = new THREE.BoxGeometry(0.4, 0.3, 0.13);
     const dorsalPlate = new THREE.Mesh(dorsalPlateGeo, shellMat);
     dorsalPlate.position.set(0, 0, 0);
     dorsalPlate.castShadow = !isSoftwareGl;
@@ -641,6 +651,12 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
     const targetPoints: THREE.Vector3[] = REST_LANDMARKS.map(
       ([x, y, z]) => new THREE.Vector3(x, y, z)
     );
+    const rawScratchPoints: THREE.Vector3[] = REST_LANDMARKS.map(
+      ([x, y, z]) => new THREE.Vector3(x, y, z)
+    );
+    const poseScratchPoints: THREE.Vector3[] = REST_LANDMARKS.map(
+      ([x, y, z]) => new THREE.Vector3(x, y, z)
+    );
 
     let hasFilteredSeed = false;
     let lastSampleResult: HandDetectionResult | null = null;
@@ -648,7 +664,6 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
     let lastSmoothingState = smoothingRef.current;
     let lastMirroredState = isMirroredRef.current;
     let filteredScale = 1.0;
-    let smoothedScale = 1.0;
     let lastTime = performance.now();
     let frameId = 0;
     let disposed = false;
@@ -828,16 +843,23 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
           const lms = res.landmarks;
           const wms = res.worldLandmarks;
           const videoAspect = res.videoAspect || 4 / 3;
+          const profile = trainedProfileRef.current;
+          const zGain = profile ? THREE.MathUtils.clamp(profile.punchZGain, 1.0, 1.4) : 1.08;
 
-          const imgCenterX = (lms[0].x + lms[5].x + lms[9].x + lms[17].x) * 0.25;
-          const imgCenterY = (lms[0].y + lms[5].y + lms[9].y + lms[17].y) * 0.25;
+          const c0x = softClampScreenCoord(lms[0].x).value;
+          const c5x = softClampScreenCoord(lms[5].x).value;
+          const c9x = softClampScreenCoord(lms[9].x).value;
+          const c17x = softClampScreenCoord(lms[17].x).value;
+          const c0y = softClampScreenCoord(lms[0].y).value;
+          const c5y = softClampScreenCoord(lms[5].y).value;
+          const c9y = softClampScreenCoord(lms[9].y).value;
+          const c17y = softClampScreenCoord(lms[17].y).value;
 
-          const offsetX = THREE.MathUtils.clamp(
-            (mirrored ? 0.5 - imgCenterX : imgCenterX - 0.5) * 1.1,
-            -0.55,
-            0.55
-          );
-          const offsetY = THREE.MathUtils.clamp((0.52 - imgCenterY) * 0.9, -0.4, 0.45);
+          const imgCenterX = (c0x + c5x + c9x + c17x) * 0.25;
+          const imgCenterY = (c0y + c5y + c9y + c17y) * 0.25;
+
+          const offsetX = softClamp((mirrored ? 0.5 - imgCenterX : imgCenterX - 0.5) * 1.15, 0.56);
+          const offsetY = softClamp((0.52 - imgCenterY) * 0.95, 0.44);
 
           let rawScale = 1.0;
 
@@ -851,24 +873,29 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
             const wcY = (w0.y + w5.y + w9.y + w17.y) * 0.25;
             const wcZ = ((w0.z || 0) + (w5.z || 0) + (w9.z || 0) + (w17.z || 0)) * 0.25;
 
-            const palmMeters = Math.max(
-              0.05,
-              Math.hypot(w9.x - w0.x, w9.y - w0.y, (w9.z || 0) - (w0.z || 0))
-            );
+            const palmMeters = Math.hypot(w9.x - w0.x, w9.y - w0.y, (w9.z || 0) - (w0.z || 0));
+            const indexPalmMeters = Math.hypot(w5.x - w0.x, w5.y - w0.y, (w5.z || 0) - (w0.z || 0));
+            const pinkyPalmMeters = Math.hypot(w17.x - w0.x, w17.y - w0.y, (w17.z || 0) - (w0.z || 0));
             const knuckleMeters = Math.hypot(
               w17.x - w5.x,
               w17.y - w5.y,
               (w17.z || 0) - (w5.z || 0)
             );
-            const refMeters = Math.max(palmMeters, knuckleMeters * 1.15);
-            const metricScale = THREE.MathUtils.clamp(0.76 / refMeters, 6.0, 9.2);
-            rawScale = THREE.MathUtils.clamp(metricScale * 0.11, 0.72, 1.15);
+            const refMeters = Math.max(
+              0.055,
+              palmMeters,
+              indexPalmMeters,
+              pinkyPalmMeters,
+              knuckleMeters * 1.32
+            );
+            const metricScale = THREE.MathUtils.clamp(0.94 / refMeters, 7.8, 13.5);
+            rawScale = THREE.MathUtils.clamp(metricScale * 0.105, 0.85, 1.15);
 
             for (let i = 0; i < 21; i++) {
               const wm = wms[i];
-              const lx = (mirrored ? -(wm.x - wcX) : wm.x - wcX) * metricScale;
-              const ly = -(wm.y - wcY) * metricScale;
-              const lz = -((wm.z || 0) - wcZ) * metricScale;
+              const lx = softClamp((mirrored ? -(wm.x - wcX) : wm.x - wcX) * metricScale, 1.65);
+              const ly = softClamp(-(wm.y - wcY) * metricScale, 1.65);
+              const lz = softClamp(-((wm.z || 0) - wcZ) * metricScale * zGain, 1.15);
               rawPoints[i].set(lx + offsetX, ly + offsetY - 0.1, lz);
             }
           } else {
@@ -885,23 +912,64 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
             const palmDz = ((p9.z || 0) - (p0.z || 0)) * videoAspect;
             const palmSpan = Math.hypot(palmDx, palmDy, palmDz);
 
+            const indexPalmSpan = Math.hypot(
+              (p5.x - p0.x) * videoAspect,
+              p5.y - p0.y,
+              ((p5.z || 0) - (p0.z || 0)) * videoAspect
+            );
+            const pinkyPalmSpan = Math.hypot(
+              (p17.x - p0.x) * videoAspect,
+              p17.y - p0.y,
+              ((p17.z || 0) - (p0.z || 0)) * videoAspect
+            );
+
             const knuckleDx = (p17.x - p5.x) * videoAspect;
             const knuckleDy = p17.y - p5.y;
             const knuckleDz = ((p17.z || 0) - (p5.z || 0)) * videoAspect;
             const knuckleSpan = Math.hypot(knuckleDx, knuckleDy, knuckleDz);
 
-            const refSpan = Math.max(0.08, palmSpan, knuckleSpan * 1.18);
-            const normScale = 0.76 / refSpan;
-            rawScale = THREE.MathUtils.clamp(normScale * 0.16, 0.72, 1.15);
+            const refSpan = Math.max(
+              0.08,
+              palmSpan,
+              indexPalmSpan,
+              pinkyPalmSpan,
+              knuckleSpan * 1.32
+            );
+            const normScale = THREE.MathUtils.clamp(0.94 / refSpan, 1.4, 8.5);
+            rawScale = THREE.MathUtils.clamp(normScale * 0.14, 0.85, 1.15);
 
             for (let i = 0; i < 21; i++) {
               const lm = lms[i];
-              const lx =
-                (mirrored ? -(lm.x - imgCenterX) : lm.x - imgCenterX) * videoAspect * normScale;
-              const ly = -(lm.y - imgCenterY) * normScale;
-              const lz = -((lm.z || 0) - centerZ) * videoAspect * normScale;
+              const bx = softClampScreenCoord(lm.x).value;
+              const by = softClampScreenCoord(lm.y).value;
+              const lx = softClamp(
+                (mirrored ? -(bx - imgCenterX) : bx - imgCenterX) * videoAspect * normScale,
+                1.65
+              );
+              const ly = softClamp(-(by - imgCenterY) * normScale, 1.65);
+              const lz = softClamp(-((lm.z || 0) - centerZ) * videoAspect * normScale * zGain, 1.15);
               rawPoints[i].set(lx + offsetX, ly + offsetY - 0.1, lz);
             }
+          }
+
+          enforceUnclumpableHandSkeleton(
+            rawPoints,
+            rawScratchPoints,
+            0.96,
+            hasFilteredSeed ? filteredPoints : undefined,
+            profile
+          );
+
+          const adjCx = (rawPoints[0].x + rawPoints[5].x + rawPoints[9].x + rawPoints[17].x) * 0.25;
+          const adjCy = (rawPoints[0].y + rawPoints[5].y + rawPoints[9].y + rawPoints[17].y) * 0.25;
+          const adjCz = (rawPoints[0].z + rawPoints[5].z + rawPoints[9].z + rawPoints[17].z) * 0.25;
+          const recenterDx = offsetX - adjCx;
+          const recenterDy = offsetY - 0.1 - adjCy;
+          const recenterDz = -adjCz;
+          for (let i = 0; i < 21; i++) {
+            rawPoints[i].x = softClamp(rawPoints[i].x + recenterDx, 2.0);
+            rawPoints[i].y = softClamp(rawPoints[i].y + recenterDy, 1.9);
+            rawPoints[i].z = softClamp(rawPoints[i].z + recenterDz, 1.35);
           }
 
           if (mirrored !== lastMirroredState) {
@@ -921,32 +989,38 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
                 const dy = rawPoints[i].y - filteredPoints[i].y;
                 const dz = rawPoints[i].z - filteredPoints[i].z;
                 const speed = Math.hypot(dx, dy, dz) / sampleDt;
-                const cutoffHz = 0.95 + 1.6 * speed;
+                const cutoffHz = 1.0 + 2.4 * speed;
                 const tau = 1 / (2 * Math.PI * cutoffHz);
-                const alpha = THREE.MathUtils.clamp(sampleDt / (tau + sampleDt), 0.18, 0.72);
+                const alpha = THREE.MathUtils.clamp(sampleDt / (tau + sampleDt), 0.2, 0.88);
                 filteredPoints[i].x += alpha * dx;
                 filteredPoints[i].y += alpha * dy;
                 filteredPoints[i].z += alpha * dz;
               }
-              const scaleTau = 1 / (2 * Math.PI * 1.4);
+              const scaleTau = 1 / (2 * Math.PI * 1.6);
               const scaleAlpha = THREE.MathUtils.clamp(
                 sampleDt / (scaleTau + sampleDt),
                 0.18,
-                0.55
+                0.65
               );
               filteredScale += scaleAlpha * (rawScale - filteredScale);
             }
 
+            enforceUnclumpableHandSkeleton(
+              filteredPoints,
+              rawScratchPoints,
+              0.96,
+              rawPoints,
+              profile
+            );
+
             for (let i = 0; i < 21; i++) {
               targetPoints[i].copy(filteredPoints[i]);
             }
-            smoothedScale = filteredScale;
           } else {
             hasFilteredSeed = false;
             for (let i = 0; i < 21; i++) {
               targetPoints[i].copy(rawPoints[i]);
             }
-            smoothedScale = rawScale;
           }
 
           lastSampleResult = res;
@@ -975,7 +1049,6 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
         lastSampleResult = null;
         lastSmoothingState = smoothing;
         lastMirroredState = mirrored;
-        smoothedScale = 1.0;
         const swayY = Math.sin(elapsed * 1.5) * 0.05;
         const swayYaw = Math.sin(elapsed * 0.9) * 0.14;
         const cosY = Math.cos(swayYaw);
@@ -1011,10 +1084,19 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
       if (hasHand && !smoothing) {
         for (let i = 0; i < 21; i++) {
           currentPoints[i].copy(targetPoints[i]);
+        }
+        enforceUnclumpableHandSkeleton(
+          currentPoints,
+          poseScratchPoints,
+          0.96,
+          targetPoints,
+          trainedProfileRef.current
+        );
+        for (let i = 0; i < 21; i++) {
           jointMeshes[i].position.copy(currentPoints[i]);
         }
       } else {
-        const dampLambda = hasHand ? 16 : 8;
+        const dampLambda = hasHand ? 24 : 8;
 
         for (let i = 0; i < 21; i++) {
           currentPoints[i].x = THREE.MathUtils.damp(
@@ -1035,6 +1117,19 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
             dampLambda,
             dt
           );
+        }
+
+        if (hasHand) {
+          enforceUnclumpableHandSkeleton(
+            currentPoints,
+            poseScratchPoints,
+            0.96,
+            targetPoints,
+            trainedProfileRef.current
+          );
+        }
+
+        for (let i = 0; i < 21; i++) {
           jointMeshes[i].position.copy(currentPoints[i]);
         }
       }
@@ -1084,15 +1179,20 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
       if (_palmRight.lengthSq() < 0.0001) _palmRight.set(1, 0, 0);
       _palmRight.normalize();
 
-      _palmFwd.crossVectors(_palmRight, _palmUp).normalize();
+      _palmFwd.crossVectors(_palmRight, _palmUp);
+      if (_palmFwd.lengthSq() < 0.0004) {
+        _palmFwd.set(0, 0, 1);
+      } else {
+        _palmFwd.normalize();
+      }
       _palmRight.crossVectors(_palmUp, _palmFwd).normalize();
 
       _rotMat.makeBasis(_palmRight, _palmUp, _palmFwd);
       _palmQuat.setFromRotationMatrix(_rotMat);
 
-      const palmSpanW = Math.max(0.35, w5.distanceTo(w17));
-      const palmSpanH = Math.max(0.4, w0.distanceTo(w9));
-      const halfThick = THREE.MathUtils.clamp((palmSpanW + palmSpanH) * 0.042, 0.052, 0.088);
+      const palmSpanW = Math.max(0.42, w5.distanceTo(w17));
+      const palmSpanH = Math.max(0.48, w0.distanceTo(w9));
+      const halfThick = 0.052 + softClamp((palmSpanW + palmSpanH) * 0.028, 0.036);
       const midThick = halfThick * 0.48;
 
       _palmAnchor[0].copy(w17);
@@ -1104,9 +1204,18 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
 
       const invSpanW = 1 / Math.max(0.25, palmSpanW);
       const invSpanH = 1 / Math.max(0.25, palmSpanH);
+      const minAnchorRad = 0.19;
 
       for (let i = 0; i < 6; i++) {
         _vecDir.subVectors(_palmAnchor[i], _palmCenter);
+        const rad = _vecDir.length();
+        if (rad < minAnchorRad) {
+          if (rad > 0.002) {
+            _vecDir.multiplyScalar(minAnchorRad / rad);
+          } else {
+            _vecDir.copy(_palmUp).multiplyScalar(minAnchorRad);
+          }
+        }
         _palmFront[i]
           .copy(_palmCenter)
           .addScaledVector(_vecDir, 0.88)
@@ -1233,6 +1342,7 @@ export const Hand3DViewer: React.FC<Hand3DViewerProps> = ({
 
     return () => {
       disposed = true;
+      resetCamFnRef.current = null;
       cancelAnimationFrame(frameId);
       clearTimeout(frameId);
       resizeObserver.disconnect();

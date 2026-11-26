@@ -48,6 +48,27 @@ export interface HandDetectionResult {
   pinchDistance?: number;
 }
 
+export interface HandBoundsTelemetry {
+  outOfBoundsCount: number;
+  overlapPairsResolved: number;
+  softClamped: boolean;
+  punchVelocity: number;
+}
+
+export interface HandTwinTrainingProfile {
+  trainedAt: number;
+  epochsCompleted: number;
+  totalSamples: number;
+  validationAccuracy: number;
+  finalLoss: number;
+  punchZGain: number;
+  knuckleSpreadGain: number;
+  calibratedBoneRatios: number[];
+  gestureSampleCounts: Record<Exclude<HandGesture, 'None'>, number>;
+  weights: number[][];
+  biases: number[];
+}
+
 export interface PoseLandmark {
   x: number;
   y: number;
@@ -88,9 +109,20 @@ export interface FaceLandmark {
   z: number;
 }
 
+export interface FaceColorPalette {
+  skin: string;
+  skinShadow: string;
+  lips: string;
+  eyebrows: string;
+  hair: string;
+  iris: string;
+}
+
 export interface FaceMeshResult {
   landmarks: FaceLandmark[];
   eyeAspectRatio: number;
+  leftEyeAspectRatio?: number;
+  rightEyeAspectRatio?: number;
   mouthOpenness: number;
   faceOrientation: {
     yaw: number;
@@ -103,6 +135,8 @@ export interface FaceMeshResult {
     rightEye: FaceLandmark;
     mouthCenter: FaceLandmark;
   };
+  palette?: FaceColorPalette;
+  videoAspect?: number;
 }
 
 export interface CameraDevice {
@@ -129,11 +163,40 @@ export interface ArgusCustomClass {
   createdAt: number;
 }
 
+export interface ArgusTrainingProgress {
+  epoch: number;
+  totalEpochs: number;
+  loss: number;
+  accuracy: number;
+  datasetSize: number;
+  phase: string;
+}
+
+export interface ArgusUnifiedDatasetModel {
+  version: number;
+  trainedAt: number;
+  epochsCompleted: number;
+  totalRawSamples: number;
+  totalAugmentedSamples: number;
+  validationAccuracy: number;
+  finalLoss: number;
+  featureDim: number;
+  hiddenDim: number;
+  classIds: string[];
+  classNames: string[];
+  w1: number[][];
+  b1: number[];
+  w2: number[][];
+  b2: number[];
+  centroids: number[][];
+}
+
 export interface ArgusModelMetadata {
   backbone: 'mobilenet_v2' | 'lite_mobilenet_v2';
   trainingDataImages: string;
   parametersCount: string;
   totalClasses: number;
+  unifiedDatasetSamples: number;
 }
 
 export type PlantHealthRating = 

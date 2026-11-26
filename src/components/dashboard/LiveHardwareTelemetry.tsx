@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useCamera } from '../../context/CameraContext';
+import { soundFx } from '../../services/soundFx';
 import confetti from 'canvas-confetti';
 import { Activity, Cpu, Sparkles, Volume2, ShieldCheck } from 'lucide-react';
 
@@ -62,22 +63,7 @@ export const LiveHardwareTelemetry: React.FC = () => {
   }, [latencyHistory]);
 
   const handleSoundPing = () => {
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(1760, audioCtx.currentTime + 0.1);
-      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.1);
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.1);
-    } catch (e) {
-
-    }
+    soundFx.playTargetLock();
   };
 
   const handleConfetti = () => {

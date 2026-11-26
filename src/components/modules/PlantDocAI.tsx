@@ -33,11 +33,28 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
   const [chlorophyllLevel, setChlorophyllLevel] = useState<number>(78);
   const [rgbMeans, setRgbMeans] = useState<{ r: number; g: number; b: number }>({ r: 78, g: 142, b: 64 });
   const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string>('');
   const [isMuted, setIsMuted] = useState<boolean>(soundFx.getIsMuted());
   const [lastAnalyzedTime, setLastAnalyzedTime] = useState<string>('Standby');
   const [reportSaved, setReportSaved] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scanPhaseRef = useRef<number>(0);
+  const objectUrlRef = useRef<string | null>(null);
+  const reportTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = soundFx.subscribe(setIsMuted);
+    return () => {
+      unsubscribe();
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+      if (reportTimerRef.current !== null) {
+        window.clearTimeout(reportTimerRef.current);
+      }
+    };
+  }, []);
 
   const performDiagnosis = useCallback(() => {
     if (!videoRef.current) return;
@@ -49,12 +66,14 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
     setLastAnalyzedTime(new Date().toLocaleTimeString());
   }, [selectedSpecimenId, videoRef]);
 
-  useEffect(() => {
-    const match = BOTANICAL_DATABASE.find((p) => p.id === selectedSpecimenId);
+  const handleSelectSpecimen = (specimenId: string) => {
+    setSelectedSpecimenId(specimenId);
+    const match = BOTANICAL_DATABASE.find((p) => p.id === specimenId);
     if (match) {
       setCurrentDiagnosis(match);
       setExgIndex(match.chlorophyllIndex);
       setChlorophyllLevel(Math.round(match.chlorophyllIndex * 100));
+      setLastAnalyzedTime(new Date().toLocaleTimeString());
       if (match.isWeed) {
         soundFx.playWeedAlert();
       } else {
@@ -67,7 +86,7 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
         type: match.isWeed ? 'alert' : 'success',
       });
     }
-  }, [selectedSpecimenId, onLogEvent]);
+  };
 
   useEffect(() => {
     if (!isStreaming) return;
@@ -178,15 +197,31 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
     [currentDiagnosis, exgIndex, chlorophyllLevel]
   );
 
+  const clearUploadedPreview = () => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    setUploadedPreviewUrl(null);
+    setUploadError('');
+  };
+
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+    }
     const previewUrl = URL.createObjectURL(file);
+    objectUrlRef.current = previewUrl;
+    setUploadError('');
     setUploadedPreviewUrl(previewUrl);
 
     const img = new Image();
     img.onload = () => {
+      if (objectUrlRef.current !== previewUrl) return;
       const analysis = plantDocService.analyzeImageElement(img);
       setSelectedSpecimenId(analysis.diagnosis.id);
       setCurrentDiagnosis(analysis.diagnosis);
@@ -214,6 +249,10 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
         type: analysis.diagnosis.isWeed ? 'alert' : 'success',
       });
     };
+    img.onerror = () => {
+      clearUploadedPreview();
+      setUploadError('Unsupported or unreadable image file. Please select a valid PNG, JPG, or WebP leaf photo.');
+    };
     img.src = previewUrl;
   };
 
@@ -225,7 +264,10 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
     });
     soundFx.playSuccessChime();
     setReportSaved(true);
-    setTimeout(() => setReportSaved(false), 3000);
+    if (reportTimerRef.current !== null) {
+      window.clearTimeout(reportTimerRef.current);
+    }
+    reportTimerRef.current = window.setTimeout(() => setReportSaved(false), 3000);
 
     onLogEvent({
       module: 'plantdoc',
@@ -236,8 +278,7 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
   };
 
   const toggleSound = () => {
-    const next = soundFx.toggleMute();
-    setIsMuted(next);
+    soundFx.toggleMute();
   };
 
   return (
@@ -306,6 +347,19 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
             }
           />
 
+          {uploadError && (
+            <div className="comic-panel p-3.5 bg-[#ff462b]/15 border-[#ff462b] text-xs font-black text-[#ff462b] flex items-center justify-between gap-2">
+              <span>{uploadError}</span>
+              <button
+                onClick={() => setUploadError('')}
+                className="p-1 rounded hover:bg-black/10 cursor-pointer"
+                aria-label="Dismiss upload error"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
           {uploadedPreviewUrl && (
             <div className="comic-panel p-4 bg-white flex flex-col sm:flex-row items-center gap-4">
               <div className="relative w-36 h-28 rounded-xl border-2 border-[#121829] overflow-hidden shrink-0 shadow-[2px_2px_0px_#121829]">
@@ -315,7 +369,7 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
                   className="w-full h-full object-cover"
                 />
                 <button
-                  onClick={() => setUploadedPreviewUrl(null)}
+                  onClick={clearUploadedPreview}
                   className="absolute top-1 right-1 p-1 rounded-md bg-black/75 text-white hover:bg-[#ff462b] cursor-pointer"
                   title="Dismiss specimen preview"
                 >
@@ -332,19 +386,19 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
                 <div className="grid grid-cols-3 gap-2 text-xs font-mono">
                   <div className="p-2 rounded-lg border border-[#121829] bg-[#faf6ee]">
                     <span className="text-[10px] block text-[#ff462b] font-black">RED ({rgbMeans.r})</span>
-                    <div className="w-full h-1.5 bg-white rounded-full mt-1 overflow-hidden">
+                    <div className="w-full h-1.5 bg-white dark:bg-[#0f172a] rounded-full mt-1 overflow-hidden">
                       <div className="bg-[#ff462b] h-full" style={{ width: `${(rgbMeans.r / 255) * 100}%` }} />
                     </div>
                   </div>
                   <div className="p-2 rounded-lg border border-[#121829] bg-[#faf6ee]">
                     <span className="text-[10px] block text-[#059669] font-black">GREEN ({rgbMeans.g})</span>
-                    <div className="w-full h-1.5 bg-white rounded-full mt-1 overflow-hidden">
+                    <div className="w-full h-1.5 bg-white dark:bg-[#0f172a] rounded-full mt-1 overflow-hidden">
                       <div className="bg-[#059669] h-full" style={{ width: `${(rgbMeans.g / 255) * 100}%` }} />
                     </div>
                   </div>
                   <div className="p-2 rounded-lg border border-[#121829] bg-[#faf6ee]">
                     <span className="text-[10px] block text-[#0284c7] font-black">BLUE ({rgbMeans.b})</span>
-                    <div className="w-full h-1.5 bg-white rounded-full mt-1 overflow-hidden">
+                    <div className="w-full h-1.5 bg-white dark:bg-[#0f172a] rounded-full mt-1 overflow-hidden">
                       <div className="bg-[#0284c7] h-full" style={{ width: `${(rgbMeans.b / 255) * 100}%` }} />
                     </div>
                   </div>
@@ -373,13 +427,13 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
                 return (
                   <button
                     key={specimen.id}
-                    onClick={() => setSelectedSpecimenId(specimen.id)}
+                    onClick={() => handleSelectSpecimen(specimen.id)}
                     className={`p-2.5 rounded-xl border-2 border-[#121829] text-left transition-all cursor-pointer ${
                       isSelected
                         ? specimen.isWeed
                           ? 'bg-[#ff462b] text-white shadow-[3px_3px_0px_#121829] scale-[1.02]'
                           : 'bg-[#059669] text-white shadow-[3px_3px_0px_#121829] scale-[1.02]'
-                        : 'bg-[#faf6ee] hover:bg-white text-[#121829] shadow-[1.5px_1.5px_0px_#121829]'
+                        : 'bg-[#faf6ee] dark:bg-[#1a2337] hover:bg-white dark:hover:bg-[#24314b] text-[#121829] dark:text-[#f8fafc] shadow-[1.5px_1.5px_0px_#121829]'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1">
@@ -472,7 +526,7 @@ export const PlantDocAI: React.FC<PlantDocAIProps> = ({ onLogEvent }) => {
                     {exgIndex} ({chlorophyllLevel}%)
                   </span>
                 </div>
-                <div className="w-full bg-white border border-[#121829] h-2.5 rounded-full overflow-hidden">
+                <div className="w-full bg-white dark:bg-[#0f172a] border border-[#121829] h-2.5 rounded-full overflow-hidden">
                   <div
                     className="bg-[#10b981] h-full transition-all duration-300"
                     style={{ width: `${Math.min(100, chlorophyllLevel)}%` }}

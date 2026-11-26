@@ -111,7 +111,7 @@ export const ExhibitionModal: React.FC<ExhibitionModalProps> = ({
                   className={`w-full text-left p-3 rounded-xl border-2 border-[#121829] text-xs font-black transition-all cursor-pointer flex items-center justify-between ${
                     isSel
                       ? 'bg-[#ff462b] text-white shadow-[3px_3px_0px_#121829] translate-x-1'
-                      : 'bg-[#faf6ee] dark:bg-[#1a2337] text-[#121829] dark:text-white hover:bg-white shadow-[1.5px_1.5px_0px_#121829]'
+                      : 'bg-[#faf6ee] dark:bg-[#1a2337] text-[#121829] dark:text-white hover:bg-white dark:hover:bg-[#24314b] shadow-[1.5px_1.5px_0px_#121829]'
                   }`}
                 >
                   <div className="flex items-center gap-2 truncate">

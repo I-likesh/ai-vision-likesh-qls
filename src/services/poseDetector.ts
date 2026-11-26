@@ -245,10 +245,10 @@ export async function detectPose(video: HTMLVideoElement): Promise<PoseDetection
 let poseTick = 0;
 function runFallbackPose(): PoseDetectionResult {
   poseTick += 0.04;
-  const squatPhase = Math.sin(poseTick);
-  const hipY = 0.52 + (squatPhase > 0 ? squatPhase * 0.08 : 0);
-  const kneeY = hipY + 0.16 + (squatPhase > 0 ? squatPhase * 0.04 : 0);
-  const kneeAngle = squatPhase > 0 ? Math.round(170 - squatPhase * 70) : 172;
+  const squatPhase = Math.max(0, Math.sin(poseTick));
+  const hipY = 0.52 + squatPhase * 0.16;
+  const kneeY = 0.7 + squatPhase * 0.06;
+  const kneeFlare = squatPhase * 0.095;
 
   const rawLm: PoseLandmark[] = Array.from({ length: 33 }, () => ({
     x: 0.5,
@@ -256,29 +256,25 @@ function runFallbackPose(): PoseDetectionResult {
     visibility: 0.9,
   }));
 
-  rawLm[0] = { x: 0.5, y: 0.22, visibility: 0.95 };
-  rawLm[11] = { x: 0.42, y: 0.32, visibility: 0.95 };
-  rawLm[12] = { x: 0.58, y: 0.32, visibility: 0.95 };
-  rawLm[13] = { x: 0.38, y: 0.44, visibility: 0.9 };
-  rawLm[14] = { x: 0.62, y: 0.44, visibility: 0.9 };
-  rawLm[15] = { x: 0.36, y: 0.56, visibility: 0.9 };
-  rawLm[16] = { x: 0.64, y: 0.56, visibility: 0.9 };
+  rawLm[0] = { x: 0.5, y: 0.22 + squatPhase * 0.1, visibility: 0.95 };
+  rawLm[11] = { x: 0.42, y: 0.32 + squatPhase * 0.12, visibility: 0.95 };
+  rawLm[12] = { x: 0.58, y: 0.32 + squatPhase * 0.12, visibility: 0.95 };
+  rawLm[13] = { x: 0.38, y: 0.44 + squatPhase * 0.1, visibility: 0.9 };
+  rawLm[14] = { x: 0.62, y: 0.44 + squatPhase * 0.1, visibility: 0.9 };
+  rawLm[15] = { x: 0.36, y: 0.56 + squatPhase * 0.06, visibility: 0.9 };
+  rawLm[16] = { x: 0.64, y: 0.56 + squatPhase * 0.06, visibility: 0.9 };
   rawLm[23] = { x: 0.44, y: hipY, visibility: 0.95 };
   rawLm[24] = { x: 0.56, y: hipY, visibility: 0.95 };
-  rawLm[25] = { x: 0.42, y: kneeY, visibility: 0.9 };
-  rawLm[26] = { x: 0.58, y: kneeY, visibility: 0.9 };
+  rawLm[25] = { x: 0.42 - kneeFlare, y: kneeY, visibility: 0.9 };
+  rawLm[26] = { x: 0.58 + kneeFlare, y: kneeY, visibility: 0.9 };
   rawLm[27] = { x: 0.43, y: 0.88, visibility: 0.9 };
   rawLm[28] = { x: 0.57, y: 0.88, visibility: 0.9 };
 
   const { angles, pose } = analyzeBiomechanics(rawLm);
   return {
     landmarks: rawLm,
-    angles: {
-      ...angles,
-      leftKnee: kneeAngle,
-      rightKnee: kneeAngle,
-    },
-    recognizedPose: kneeAngle < 120 ? 'Squat' : pose,
+    angles,
+    recognizedPose: pose,
     confidence: 91,
     reps: totalReps,
   };

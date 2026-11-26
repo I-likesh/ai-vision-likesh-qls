@@ -11,7 +11,7 @@ interface MotionProps {
 }
 
 export const MotionIntelligence: React.FC<MotionProps> = ({ onLogEvent }) => {
-  const { videoRef, isStreaming } = useCamera();
+  const { videoRef, isStreaming, isMirrored } = useCamera();
   const [modelReady, setModelReady] = useState(false);
   const [poseResult, setPoseResult] = useState<PoseDetectionResult | null>(null);
   const [repCount, setRepCount] = useState(0);
@@ -108,6 +108,7 @@ export const MotionIntelligence: React.FC<MotionProps> = ({ onLogEvent }) => {
 
   const handleResetReps = () => {
     resetPoseReps();
+    repCountRef.current = 0;
     setRepCount(0);
   };
 
@@ -115,6 +116,7 @@ export const MotionIntelligence: React.FC<MotionProps> = ({ onLogEvent }) => {
     if (!poseResult || !poseResult.landmarks) return;
 
     const { landmarks, angles } = poseResult;
+    const mapX = (x: number) => (isMirrored ? 1 - x : x) * width;
 
     ctx.strokeStyle = '#121829';
     ctx.lineWidth = 7;
@@ -123,8 +125,8 @@ export const MotionIntelligence: React.FC<MotionProps> = ({ onLogEvent }) => {
       const end = landmarks[endIdx];
       if (start && end && (start.visibility ?? 1) > 0.4 && (end.visibility ?? 1) > 0.4) {
         ctx.beginPath();
-        ctx.moveTo(start.x * width, start.y * height);
-        ctx.lineTo(end.x * width, end.y * height);
+        ctx.moveTo(mapX(start.x), start.y * height);
+        ctx.lineTo(mapX(end.x), end.y * height);
         ctx.stroke();
       }
     });
@@ -136,15 +138,15 @@ export const MotionIntelligence: React.FC<MotionProps> = ({ onLogEvent }) => {
       const end = landmarks[endIdx];
       if (start && end && (start.visibility ?? 1) > 0.4 && (end.visibility ?? 1) > 0.4) {
         ctx.beginPath();
-        ctx.moveTo(start.x * width, start.y * height);
-        ctx.lineTo(end.x * width, end.y * height);
+        ctx.moveTo(mapX(start.x), start.y * height);
+        ctx.lineTo(mapX(end.x), end.y * height);
         ctx.stroke();
       }
     });
 
     landmarks.forEach((pt, idx) => {
       if ((pt.visibility ?? 1) > 0.4) {
-        const px = pt.x * width;
+        const px = mapX(pt.x);
         const py = pt.y * height;
 
         const isKnee = idx === 25 || idx === 26;
@@ -164,8 +166,8 @@ export const MotionIntelligence: React.FC<MotionProps> = ({ onLogEvent }) => {
     const leftKnee = landmarks[25];
 
     if (leftElbow && (leftElbow.visibility ?? 1) > 0.5) {
-      const ex = leftElbow.x * width + 14;
-      const ey = leftElbow.y * height;
+      const ex = Math.max(8, Math.min(width - 60, mapX(leftElbow.x) + 14));
+      const ey = Math.max(18, Math.min(height - 14, leftElbow.y * height));
       ctx.fillStyle = '#ffd000';
       ctx.fillRect(ex, ey - 14, 52, 22);
       ctx.strokeStyle = '#121829';
@@ -177,8 +179,8 @@ export const MotionIntelligence: React.FC<MotionProps> = ({ onLogEvent }) => {
     }
 
     if (leftKnee && (leftKnee.visibility ?? 1) > 0.5) {
-      const kx = leftKnee.x * width + 14;
-      const ky = leftKnee.y * height;
+      const kx = Math.max(8, Math.min(width - 60, mapX(leftKnee.x) + 14));
+      const ky = Math.max(18, Math.min(height - 14, leftKnee.y * height));
       ctx.fillStyle = '#ff462b';
       ctx.fillRect(kx, ky - 14, 52, 22);
       ctx.strokeStyle = '#121829';
@@ -300,7 +302,7 @@ export const MotionIntelligence: React.FC<MotionProps> = ({ onLogEvent }) => {
             <div className="w-full bg-[#faf6ee] border-2 border-[#121829] h-3 rounded-full mt-3 overflow-hidden shadow-[1px_1px_0px_#121829]">
               <div
                 className="bg-[#059669] h-full transition-all duration-300"
-                style={{ width: `${angles?.postureScore || 92}%` }}
+                style={{ width: `${angles?.postureScore ?? 92}%` }}
               />
             </div>
           </div>

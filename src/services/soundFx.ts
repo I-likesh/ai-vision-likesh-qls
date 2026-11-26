@@ -1,6 +1,7 @@
 class SoundFxEngine {
   private ctx: AudioContext | null = null;
   private isMuted: boolean = false;
+  private listeners = new Set<(muted: boolean) => void>();
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -21,11 +22,19 @@ class SoundFxEngine {
     }
   }
 
+  public subscribe(listener: (muted: boolean) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
   public toggleMute(): boolean {
     this.isMuted = !this.isMuted;
     if (typeof window !== 'undefined') {
       localStorage.setItem('ai_vision_sound_muted', String(this.isMuted));
     }
+    this.listeners.forEach((listener) => listener(this.isMuted));
     return this.isMuted;
   }
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AIModuleId } from '../../types';
 import { PWAInstallButton } from '../../pwa/PWAInstallButton';
 import { useTheme } from '../../context/ThemeContext';
@@ -20,9 +20,12 @@ export const TopBar: React.FC<TopBarProps> = ({
   const { isDarkMode, toggleDarkMode } = useTheme();
   const [isMuted, setIsMuted] = useState(soundFx.getIsMuted());
 
+  useEffect(() => {
+    return soundFx.subscribe(setIsMuted);
+  }, []);
+
   const handleToggleSound = () => {
-    const next = soundFx.toggleMute();
-    setIsMuted(next);
+    soundFx.toggleMute();
   };
 
   return (

@@ -5,25 +5,13 @@ import JSZip from 'jszip';
 import confetti from 'canvas-confetti';
 import { soundFx } from '../services/soundFx';
 
+import { OFFLINE_PROJECT_LOADERS } from './offlineProjectFiles';
+import offlineProjectFilesRaw from './offlineProjectFiles.ts?raw';
+
 interface WindowsDesktopModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
-
-const PROJECT_FILE_LOADERS = import.meta.glob(
-  [
-    '/src/**/*.ts',
-    '/src/**/*.tsx',
-    '/src/**/*.css',
-    '/index.html',
-    '/package.json',
-    '/tsconfig.json',
-    '/vite.config.ts',
-    '/metadata.json',
-    '/.env.example',
-  ],
-  { query: '?raw', import: 'default' }
-) as Record<string, () => Promise<string>>;
 
 const PUBLIC_ASSETS = [
   'icon.svg',
@@ -50,33 +38,150 @@ export const WindowsDesktopModal: React.FC<WindowsDesktopModalProps> = ({ isOpen
     try {
       const zip = new JSZip();
 
-      const batchContent = `@echo off
-title AI VISION - Complete Offline Computer Vision Platform
-color 0b
-echo ============================================================
-echo AI VISION - 100%% Local Offline Computer Vision Platform
-echo Zero paid APIs, Zero cloud latency, Complete On-Device Privacy
-echo Modules: ARGUS, GestureOS + 3D Hand Twin, Pose, FaceMesh, PlantDoc AI
-echo ============================================================
-echo.
-echo Checking Node.js environment...
-where node >nul 2>nul
-if %ERRORLEVEL% NEQ 0 (
-  echo [ERROR] Node.js is required! Please install Node.js v18+
-  pause
-  exit /b
-)
-
-echo [1/2] Installing local dependencies (offline cache supported)...
-if not exist node_modules (
-  call npm install --prefer-offline
-)
-
-echo [2/2] Launching AI VISION local server on port 3000...
-start "" http://localhost:3000
-call npm run dev
-pause
+      const npmrcContent = `legacy-peer-deps=true
+audit=false
+fund=false
 `;
+
+      const batchContent = [
+        '@echo off',
+        'if /i "%~1"=="--keep-open" goto :init_env',
+        'cmd /k call "%~f0" --keep-open',
+        'exit /b',
+        '',
+        ':init_env',
+        'setlocal DisableDelayedExpansion',
+        'set "NODE_ENV="',
+        'pushd "%~dp0"',
+        'if errorlevel 1 goto :bad_dir',
+        'title AI VISION - Complete Offline Computer Vision Platform',
+        'color 0b',
+        '',
+        'echo ============================================================',
+        'echo AI VISION - 100%% Local Offline Computer Vision Platform',
+        'echo Zero paid APIs, Zero cloud latency, Complete On-Device Privacy',
+        'echo Modules: ARGUS, GestureOS + 3D Hand Twin, Pose, FaceMesh, PlantDoc AI',
+        'echo ============================================================',
+        'echo.',
+        '',
+        'if not exist "package.json" goto :not_extracted',
+        '',
+        'echo Checking Node.js environment...',
+        'call node -v >nul 2>nul',
+        'if errorlevel 1 goto :no_node',
+        'call npm -v >nul 2>nul',
+        'if errorlevel 1 goto :no_npm',
+        'echo Detected Node.js:',
+        'call node -v',
+        'echo.',
+        '',
+        'if not exist "node_modules\\vite\\bin\\vite.js" goto :install_deps',
+        'if not exist "node_modules\\vite-plugin-pwa\\package.json" goto :install_deps',
+        'if not exist "node_modules\\@tailwindcss\\vite\\package.json" goto :install_deps',
+        'if not exist "node_modules\\@vitejs\\plugin-react\\package.json" goto :install_deps',
+        'call node -e "const v=require(\'./node_modules/vite/package.json\').version; if(!v.startsWith(\'6.\')) process.exit(1)" >nul 2>nul',
+        'if errorlevel 1 goto :repair_deps',
+        'call node "node_modules\\vite\\bin\\vite.js" --version >nul 2>nul',
+        'if errorlevel 1 goto :repair_deps',
+        'goto :deps_ok',
+        '',
+        ':repair_deps',
+        'echo [INFO] Existing node_modules is outdated or incomplete. Repairing dependencies...',
+        'if exist "package-lock.json" del /f /q "package-lock.json" >nul 2>nul',
+        '',
+        ':install_deps',
+        'echo [1/2] Installing local dependencies with offline cache support...',
+        'call npm install --include=dev --legacy-peer-deps --prefer-offline --no-audit --no-fund',
+        'if errorlevel 1 goto :retry_online_install',
+        'goto :verify_install',
+        '',
+        ':retry_online_install',
+        'echo [INFO] Offline cache incomplete. Retrying standard npm install...',
+        'call npm install --include=dev --legacy-peer-deps --no-audit --no-fund',
+        '',
+        ':verify_install',
+        'if not exist "node_modules\\vite\\bin\\vite.js" goto :install_failed',
+        'if not exist "node_modules\\vite-plugin-pwa\\package.json" goto :install_failed',
+        'call node "node_modules\\vite\\bin\\vite.js" --version >nul 2>nul',
+        'if errorlevel 1 goto :install_failed',
+        'goto :launch_server',
+        '',
+        ':deps_ok',
+        'echo [1/2] Local dependencies verified. Running 100%% offline...',
+        '',
+        ':launch_server',
+        'echo [2/2] Launching AI VISION local server on http://localhost:3000 ...',
+        'echo Press Ctrl+C in this window to stop the server.',
+        'echo.',
+        'if not exist "node_modules\\.bin\\vite.cmd" goto :launch_vite_direct',
+        'call npm run dev -- --open',
+        'if errorlevel 1 goto :server_failed',
+        'goto :server_stopped',
+        '',
+        ':launch_vite_direct',
+        'call node "node_modules\\vite\\bin\\vite.js" --port=3000 --host=0.0.0.0 --open',
+        'if errorlevel 1 goto :server_failed',
+        '',
+        ':server_stopped',
+        'echo.',
+        'echo [INFO] AI VISION local server stopped.',
+        'pause',
+        'popd',
+        'exit /b 0',
+        '',
+        ':bad_dir',
+        'echo [ERROR] Unable to access the folder containing start_ai_vision_windows.bat.',
+        'echo Extract the ZIP into a local drive folder such as C:\\AI-VISION and try again.',
+        'echo.',
+        'pause',
+        'exit /b 1',
+        '',
+        ':not_extracted',
+        'echo [ERROR] package.json was not found in the current folder!',
+        'echo Right-click the ZIP archive, choose "Extract All...", and run',
+        'echo start_ai_vision_windows.bat from the extracted folder.',
+        'echo.',
+        'pause',
+        'popd',
+        'exit /b 1',
+        '',
+        ':no_node',
+        'echo [ERROR] Node.js v18+ is required but was not found in PATH!',
+        'echo Install Node.js LTS from https://nodejs.org, reopen CMD, and try again.',
+        'echo.',
+        'pause',
+        'popd',
+        'exit /b 1',
+        '',
+        ':no_npm',
+        'echo [ERROR] npm was not found in PATH alongside Node.js!',
+        'echo Reinstall Node.js LTS from https://nodejs.org and try again.',
+        'echo.',
+        'pause',
+        'popd',
+        'exit /b 1',
+        '',
+        ':install_failed',
+        'echo.',
+        'echo [ERROR] Dependency installation failed or Vite runtime check failed.',
+        'echo Ensure first-time setup has internet access, or delete the node_modules',
+        'echo folder and run start_ai_vision_windows.bat again.',
+        'echo.',
+        'pause',
+        'popd',
+        'exit /b 1',
+        '',
+        ':server_failed',
+        'echo.',
+        'echo [ERROR] AI VISION local server exited with an error.',
+        'echo Check the Vite output above. If dependencies look corrupted,',
+        'echo delete the node_modules folder and re-run start_ai_vision_windows.bat.',
+        'echo.',
+        'pause',
+        'popd',
+        'exit /b 1',
+        '',
+      ].join('\r\n');
 
       const readmeContent = `# AI VISION – 100% Offline Standalone Windows Edition
 
@@ -89,20 +194,24 @@ AI VISION is a browser-based computer vision platform uniting 5 local AI modules
 
 ## Complete Offline Instructions (Windows 10 / 11)
 
-1. Unzip this folder to any directory (e.g., C:\\AI-VISION).
+1. Right-click the ZIP file and select "Extract All..." to unzip into a fresh folder (e.g., C:\\AI-VISION). Do not run scripts directly from inside the compressed ZIP preview.
 2. Ensure Node.js (v18 or higher) is installed on your PC.
-3. Double-click "start_ai_vision_windows.bat" (first run caches npm packages; afterwards runs 100% offline).
-4. Open http://localhost:3000 with complete hardware-accelerated WebGL inference.
+3. Double-click "start_ai_vision_windows.bat" (first run caches npm packages with legacy-peer-deps compatibility; afterwards runs 100% offline).
+4. Your browser opens automatically at http://localhost:3000 with complete hardware-accelerated WebGL inference.
+
+If upgrading an older extracted folder where an earlier install failed, delete its "node_modules" folder first or re-run "start_ai_vision_windows.bat".
 
 Zero paid APIs. Zero credit cards. Camera feeds never leave your PC.
-`;
+`.replace(/\r?\n/g, '\r\n');
 
+      zip.file('.npmrc', npmrcContent.replace(/\r?\n/g, '\r\n'));
       zip.file('start_ai_vision_windows.bat', batchContent);
       zip.file('README-OFFLINE.md', readmeContent);
+      zip.file('src/pwa/offlineProjectFiles.ts', offlineProjectFilesRaw);
 
-      const entries = Object.entries(PROJECT_FILE_LOADERS);
-      const totalItems = entries.length + PUBLIC_ASSETS.length;
-      let loadedCount = 0;
+      const entries = Object.entries(OFFLINE_PROJECT_LOADERS);
+      const totalItems = entries.length + PUBLIC_ASSETS.length + 1;
+      let loadedCount = 1;
 
       for (const [rawPath, loader] of entries) {
         try {
@@ -163,20 +272,79 @@ Zero paid APIs. Zero credit cards. Camera feeds never leave your PC.
   };
 
   const handleDownloadWindowsLauncher = () => {
-    const currentUrl = window.location.href;
-    const batchContent = `@echo off
-title Launching AI VISION...
-echo Starting AI VISION Computer Vision Platform...
-
-start "" "msedge.exe" --app="${currentUrl}" --enable-features=WebAssembly,CanvasOopRasterization
-if %ERRORLEVEL% EQU 0 exit
-
-start "" "chrome.exe" --app="${currentUrl}" --enable-features=WebAssembly,CanvasOopRasterization
-if %ERRORLEVEL% EQU 0 exit
-
-start "" "${currentUrl}"
-exit
-`;
+    const safeUrl = window.location.href.replace(/%/g, '%%');
+    const batchContent = [
+      '@echo off',
+      'if /i "%~1"=="--keep-open" goto :init_launcher',
+      'cmd /k call "%~f0" --keep-open',
+      'exit /b',
+      '',
+      ':init_launcher',
+      'setlocal DisableDelayedExpansion',
+      'title Launching AI VISION...',
+      'set "TARGET_URL=' + safeUrl + '"',
+      'if exist "%~dp0start_ai_vision_windows.bat" goto :run_local_server',
+      '',
+      'echo Starting AI VISION Computer Vision Platform...',
+      'echo Target URL: %TARGET_URL%',
+      'echo.',
+      '',
+      'if exist "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe" goto :launch_edge_x86',
+      'if exist "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe" goto :launch_edge_x64',
+      'if exist "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" goto :launch_chrome_x64',
+      'if exist "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" goto :launch_chrome_x86',
+      'if exist "%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe" goto :launch_chrome_local',
+      'goto :launch_default',
+      '',
+      ':run_local_server',
+      'echo Detected local offline installation. Starting AI VISION server...',
+      'call "%~dp0start_ai_vision_windows.bat" --keep-open',
+      'exit /b %ERRORLEVEL%',
+      '',
+      ':launch_edge_x86',
+      'start "" "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe" --app="%TARGET_URL%" --enable-features=WebAssembly,CanvasOopRasterization',
+      'if errorlevel 1 goto :launch_default',
+      'goto :launch_done',
+      '',
+      ':launch_edge_x64',
+      'start "" "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe" --app="%TARGET_URL%" --enable-features=WebAssembly,CanvasOopRasterization',
+      'if errorlevel 1 goto :launch_default',
+      'goto :launch_done',
+      '',
+      ':launch_chrome_x64',
+      'start "" "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" --app="%TARGET_URL%" --enable-features=WebAssembly,CanvasOopRasterization',
+      'if errorlevel 1 goto :launch_default',
+      'goto :launch_done',
+      '',
+      ':launch_chrome_x86',
+      'start "" "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" --app="%TARGET_URL%" --enable-features=WebAssembly,CanvasOopRasterization',
+      'if errorlevel 1 goto :launch_default',
+      'goto :launch_done',
+      '',
+      ':launch_chrome_local',
+      'start "" "%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe" --app="%TARGET_URL%" --enable-features=WebAssembly,CanvasOopRasterization',
+      'if errorlevel 1 goto :launch_default',
+      'goto :launch_done',
+      '',
+      ':launch_default',
+      'start "" "%TARGET_URL%"',
+      'if errorlevel 1 goto :launch_failed',
+      '',
+      ':launch_done',
+      'echo [OK] AI VISION window launched.',
+      'echo Note: If launching localhost offline, start the local server first',
+      'echo via start_ai_vision_windows.bat inside the extracted ZIP folder.',
+      'echo.',
+      'pause',
+      'exit 0',
+      '',
+      ':launch_failed',
+      'echo [ERROR] Could not launch browser automatically.',
+      'echo Please open: %TARGET_URL%',
+      'pause',
+      'exit /b 1',
+      '',
+    ].join('\r\n');
 
     const blob = new Blob([batchContent], { type: 'application/x-bat' });
     const url = URL.createObjectURL(blob);

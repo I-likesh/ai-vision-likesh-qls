@@ -53,9 +53,8 @@ export const CameraProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, []);
 
-  useEffect(() => {
-    refreshDevices();
-  }, [refreshDevices]);
+  const mountedRef = useRef(true);
+  const requestIdRef = useRef(0);
 
   const stopTracks = useCallback((s: MediaStream | null) => {
     if (s) {
@@ -63,11 +62,24 @@ export const CameraProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, []);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    refreshDevices();
+    return () => {
+      mountedRef.current = false;
+      requestIdRef.current++;
+      stopTracks(streamRef.current);
+      streamRef.current = null;
+    };
+  }, [refreshDevices, stopTracks]);
+
   const stopCamera = useCallback(() => {
+    requestIdRef.current++;
     stopTracks(streamRef.current);
     streamRef.current = null;
     setStream(null);
     setIsStreaming(false);
+    setIsLoading(false);
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
@@ -88,11 +100,12 @@ export const CameraProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const videoConstraints: MediaTrackConstraints = {
         width: { ideal: width },
         height: { ideal: height },
-        facingMode: 'user',
       };
 
       if (deviceId) {
         videoConstraints.deviceId = { exact: deviceId };
+      } else {
+        videoConstraints.facingMode = 'user';
       }
 
       return {
@@ -103,24 +116,56 @@ export const CameraProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [resolution]
   );
 
-  const startCamera = useCallback(async (): Promise<boolean> => {
-    setIsLoading(true);
-    setError(null);
-    stopTracks(streamRef.current);
-
-    try {
+  const acquireStream = useCallback(
+    async (deviceId?: string): Promise<MediaStream> => {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error('Webcam API is not supported in this browser. Please use a modern browser.');
       }
+      try {
+        return await navigator.mediaDevices.getUserMedia(getConstraints(deviceId));
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'OverconstrainedError') {
+          return await navigator.mediaDevices.getUserMedia({
+            video: deviceId ? { deviceId: { ideal: deviceId } } : true,
+            audio: false,
+          });
+        }
+        throw err;
+      }
+    },
+    [getConstraints]
+  );
 
-      const constraints = getConstraints(selectedDeviceId || undefined);
-      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+  const startCamera = useCallback(async (): Promise<boolean> => {
+    const reqId = ++requestIdRef.current;
+    setIsLoading(true);
+    setError(null);
+    stopTracks(streamRef.current);
+    streamRef.current = null;
+    setStream(null);
 
-      streamRef.current = newStream;
-      setStream(newStream);
+    let acquiredStream: MediaStream | null = null;
+    try {
+      acquiredStream = await acquireStream(selectedDeviceId || undefined);
+
+      if (!mountedRef.current || reqId !== requestIdRef.current) {
+        stopTracks(acquiredStream);
+        return false;
+      }
+
+      streamRef.current = acquiredStream;
+      setStream(acquiredStream);
       if (videoRef.current) {
-        videoRef.current.srcObject = newStream;
+        videoRef.current.srcObject = acquiredStream;
         await videoRef.current.play();
+      }
+
+      if (!mountedRef.current || reqId !== requestIdRef.current) {
+        stopTracks(acquiredStream);
+        if (streamRef.current === acquiredStream) {
+          streamRef.current = null;
+        }
+        return false;
       }
 
       setIsStreaming(true);
@@ -128,35 +173,64 @@ export const CameraProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       await refreshDevices();
       return true;
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : 'Webcam permission denied or camera device not found.';
-      setError(message);
-      setIsLoading(false);
-      setIsStreaming(false);
+      stopTracks(acquiredStream);
+      if (streamRef.current === acquiredStream) {
+        streamRef.current = null;
+      }
+      if (mountedRef.current && reqId === requestIdRef.current) {
+        const message =
+          err instanceof Error ? err.message : 'Webcam permission denied or camera device not found.';
+        setError(message);
+        setIsLoading(false);
+        setIsStreaming(false);
+        setStream(null);
+      }
       return false;
     }
-  }, [stopTracks, getConstraints, selectedDeviceId, refreshDevices]);
+  }, [stopTracks, acquireStream, selectedDeviceId, refreshDevices]);
 
   const switchCamera = useCallback(
     async (deviceId: string) => {
       setSelectedDeviceId(deviceId);
-      if (isStreaming) {
-        stopTracks(streamRef.current);
-        try {
-          const constraints = getConstraints(deviceId);
-          const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-          streamRef.current = newStream;
-          setStream(newStream);
-          if (videoRef.current) {
-            videoRef.current.srcObject = newStream;
-            await videoRef.current.play();
-          }
-        } catch (err: unknown) {
+      if (!isStreaming) return;
+
+      const reqId = ++requestIdRef.current;
+      setIsLoading(true);
+      setError(null);
+      stopTracks(streamRef.current);
+      streamRef.current = null;
+      setStream(null);
+
+      let acquiredStream: MediaStream | null = null;
+      try {
+        acquiredStream = await acquireStream(deviceId);
+
+        if (!mountedRef.current || reqId !== requestIdRef.current) {
+          stopTracks(acquiredStream);
+          return;
+        }
+
+        streamRef.current = acquiredStream;
+        setStream(acquiredStream);
+        if (videoRef.current) {
+          videoRef.current.srcObject = acquiredStream;
+          await videoRef.current.play();
+        }
+        if (mountedRef.current && reqId === requestIdRef.current) {
+          setIsStreaming(true);
+          setIsLoading(false);
+        }
+      } catch (err: unknown) {
+        stopTracks(acquiredStream);
+        if (mountedRef.current && reqId === requestIdRef.current) {
           setError(err instanceof Error ? err.message : 'Failed to switch camera');
+          setIsStreaming(false);
+          setIsLoading(false);
+          setStream(null);
         }
       }
     },
-    [isStreaming, stopTracks, getConstraints]
+    [isStreaming, stopTracks, acquireStream]
   );
 
   const captureSnapshot = useCallback((): string | null => {
